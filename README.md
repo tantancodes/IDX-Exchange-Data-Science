@@ -1,143 +1,147 @@
-# IDX Exchange Data Science
+# IDX Exchange — California Property Price Prediction
 
-Data science internship project focused on analyzing California residential real estate data from CRMLS and developing machine learning models to predict property closing prices.
+Machine learning project for predicting the closing price (`ClosePrice`) of single-family residential properties in California using historical CRMLS transaction data.
 
-## Project Overview
+## Overview
 
-The goal of this project is to develop a machine learning model that predicts `ClosePrice` for a California single-family property using characteristics that would be available at the time of prediction.
+The objective of this project is to develop a reproducible machine learning pipeline capable of estimating the closing price of a California single-family property using characteristics available at prediction time.
 
-Because the model should be applicable to properties that are either listed or off-market, model features are restricted to information that could reasonably be known for any property. Listing-dependent variables such as `ListPrice`, `OriginalListPrice`, `DaysOnMarket`, `PurchaseContractDate`, and `ListingContractDate` are therefore excluded from model inputs.
+The model is intended to support predictions for both listed and off-market properties. Accordingly, model inputs are restricted to property characteristics that can reasonably be known independently of an active listing.
 
-The current dataset covers **27 months from January 2024 through March 2026**. After combining the monthly CRMLS datasets, observations are restricted to:
+The current dataset contains **27 months of CRMLS sold-property data from January 2024 through March 2026**.
 
-- `PropertyType == Residential`
-- `PropertySubType == SingleFamilyResidence`
+## Data
 
-This produces **297,245 single-family residential transactions** before preprocessing.
+Monthly CRMLS datasets are combined and restricted to:
 
----
+- `PropertyType == "Residential"`
+- `PropertySubType == "SingleFamilyResidence"`
 
-## Week 2 — Exploratory Data Analysis
+This produces **297,245 single-family residential transactions** prior to preprocessing.
 
-The exploratory analysis investigates price distributions, property characteristics, missing values, anomalies, geographic differences, and changes in sale prices over time.
+Raw CRMLS data is proprietary and is **not included in this repository**.
 
-### Key Findings
+### Initial Modeling Features
 
-- **Sale prices are strongly right-skewed.** Extreme observations substantially affect the raw `ClosePrice` distribution.
-- **Missingness is relatively low** among the primary numeric features. `LotSizeSquareFeet` has the highest missingness among the initial core variables at approximately 1.7%.
-- **Living area is strongly associated with sale price.** Larger homes generally sell for more, although substantial price variation remains among similarly sized properties.
-- **Lot size has a weaker relationship with price.** Large lots occur across a wide range of sale prices.
-- **Location is an important predictor.** Among the 15 cities with the most transactions, median sale prices range from approximately $440,000 in Victorville to $1.67 million in San Jose.
-- **Sale prices vary over time.** Monthly median prices change meaningfully across the dataset, supporting chronological rather than random model evaluation.
-- Data-quality issues identified during EDA include zero values, extreme observations, **29 exact duplicate rows**, and repeated `ListingKey` values.
+The current baseline feature set includes:
 
-No observations were removed during EDA. The purpose of the exploratory notebook was to identify issues requiring investigation during preprocessing.
-
----
-
-## Week 3 — Data Preprocessing
-
-Preprocessing is designed to create a reproducible, leakage-safe modeling dataset while preserving legitimate California housing-market variation.
-
-### Duplicate Investigation
-
-EDA identified both exact duplicate records and repeated `ListingKey` values.
-
-Repeated listing keys were investigated before removal. Several repeated `ListingKey` values corresponded to observations with different close dates or close prices, meaning that automatically keeping only one record per `ListingKey` could remove legitimate transaction information.
-
-Therefore:
-
-- **29 exact duplicate records were removed.**
-- Records were **not removed solely because they shared a `ListingKey`.**
-- After exact duplicates were removed, no duplicate combinations of `ListingKey`, `CloseDate`, and `ClosePrice` remained.
-
-### Target Cleaning
-
-`ClosePrice` is the prediction target and therefore is not imputed.
-
-Records with missing or non-positive close prices were removed. Inspection of the extreme upper tail also revealed a small number of implausible values, including several hundreds-of-millions-of-dollars prices associated with otherwise ordinary-sized single-family homes.
-
-A conservative **$100 million upper data-quality bound** was used to remove only the most extreme likely errors while preserving legitimate luxury-market transactions.
-
-Target cleaning removed **23 additional observations**.
-
-After duplicate and target-quality cleaning, **297,193 observations remain**.
-
-### Invalid Predictor Values
-
-Zero values were identified in several physical property characteristics, including:
-
+**Numeric**
 - `LivingArea`
 - `BedroomsTotal`
 - `BathroomsTotalInteger`
 - `LotSizeSquareFeet`
 
-Rather than dropping an entire property because one predictor is unavailable or invalid, these zero values are treated as missing values where appropriate.
-
-Missing predictor values are handled using preprocessing statistics learned from the training data rather than the test data.
-
-### Leakage-Safe Feature Selection
-
-The model is intended to estimate the value of **any California single-family property**, including properties that are not currently listed.
-
-The initial modeling feature set therefore uses property characteristics available independently of the sales process:
-
-**Numeric features**
-- `LivingArea`
-- `BedroomsTotal`
-- `BathroomsTotalInteger`
-- `LotSizeSquareFeet`
-
-**Geographic features**
+**Geographic**
 - `City`
 - `PostalCode`
 
-Listing-dependent variables are excluded from model inputs, including:
+This feature set is intentionally limited for the initial modeling pipeline. Additional property, temporal, and geographic features will be evaluated during feature engineering.
+
+### Leakage Prevention
+
+Because the model must also value properties that are not currently listed, listing-dependent variables are excluded from model inputs, including:
 
 - `ListPrice`
 - `OriginalListPrice`
-- `DaysOnMarket`
-- cumulative days-on-market fields
+- `DaysOnMarket` and cumulative DOM fields
 - `PurchaseContractDate`
 - `ListingContractDate`
-- features derived from listing price or contract timing
+- Features derived from listing price or contract timing
 
-Additional property and geographic features will be evaluated during the feature-engineering stage.
+`ClosePrice` is used exclusively as the prediction target.
 
-### Chronological Train/Test Split
+## Exploratory Data Analysis
 
-A chronological split is used instead of a random train/test split because the intended use case is prediction on future property transactions.
+Exploratory analysis was performed before applying cleaning or imputation rules.
 
-Per the project specification, the **most recent month, March 2026, is reserved as the held-out test set**.
+Key findings include:
 
-Current split:
+- `ClosePrice` is strongly right-skewed and contains a small number of extreme observations.
+- Missingness is relatively low among the initial numeric features, with `LotSizeSquareFeet` having the highest missingness at approximately 1.7%.
+- `LivingArea` has a clear positive relationship with sale price, although substantial variation remains among similarly sized properties.
+- Lot size has a weaker standalone relationship with sale price.
+- Geographic location is strongly associated with property value.
+- Among the 15 highest-volume cities, median sale prices range from approximately **$440,000 in Victorville to $1.67 million in San Jose**.
+- Monthly median prices vary over time, supporting chronological rather than random model evaluation.
+- Initial data-quality issues included zero values, extreme observations, exact duplicates, and repeated `ListingKey` values.
 
-| Dataset | Period | Observations |
+See [`notebooks/01_exploration.ipynb`](notebooks/01_exploration.ipynb) for the complete analysis.
+
+## Preprocessing
+
+Preprocessing is designed to create a reproducible modeling dataset while minimizing data leakage.
+
+### Duplicate Handling
+
+The initial dataset contained **29 exact duplicate rows**.
+
+Repeated `ListingKey` values were investigated separately rather than automatically removed. Some repeated keys correspond to records with different close dates or close prices and therefore may represent distinct transactions, relistings, or MLS updates.
+
+The preprocessing procedure therefore:
+
+- Removes exact duplicate rows.
+- Does not remove observations solely because `ListingKey` repeats.
+- Verifies transaction-level duplication using `ListingKey`, `CloseDate`, and `ClosePrice`.
+
+After exact duplicate removal, no duplicate combinations of these three fields remained.
+
+### Target Cleaning
+
+Because `ClosePrice` is the prediction target, missing target values are not imputed.
+
+Records are removed when:
+
+- `ClosePrice` is missing.
+- `ClosePrice <= 0`.
+- `ClosePrice > $100,000,000`.
+
+The upper bound was selected conservatively after inspecting the extreme tail of the distribution. It removes a very small number of highly implausible observations while retaining legitimate luxury-market transactions.
+
+After duplicate and target-quality cleaning, **297,193 observations remain**.
+
+### Predictor Cleaning
+
+Zero values in key physical-property fields are treated as missing where they do not represent meaningful measurements:
+
+- `LivingArea`
+- `BedroomsTotal`
+- `BathroomsTotalInteger`
+- `LotSizeSquareFeet`
+
+Rather than dropping an entire transaction because a predictor is unavailable, missing predictor values are handled during the preprocessing pipeline.
+
+### Temporal Train/Test Split
+
+Model evaluation uses a chronological split to better approximate prediction on future transactions.
+
+The project specification reserves the most recent available month as the test set:
+
+| Split | Period | Observations |
 | --- | --- | ---: |
-| Training | Jan. 2024 – Feb. 2026 | 285,632 |
-| Test | Mar. 2026 | 11,561 |
+| Training | Jan 2024 – Feb 2026 | 285,632 |
+| Test | Mar 2026 | 11,561 |
 
-There is **no March 2026 overlap in the training dataset**.
+March 2026 is kept completely outside the training dataset.
 
-The number of preceding months used for training will later be evaluated as a modeling choice rather than assuming that the longest possible training window is necessarily optimal.
+The number of preceding months used for model training will be treated as a tunable modeling decision rather than assuming that the full historical window is necessarily optimal.
 
-### Training-Only Preprocessing
+### Training-Only Transformations
 
-The preprocessing workflow is designed so that transformations that learn information from the data are fitted using **training observations only**.
+Data-dependent transformations are fit using the training set only to prevent information from the held-out test period from leaking into model development.
 
-The initial pipeline includes:
+The initial preprocessing pipeline includes:
 
-- Median imputation for missing numeric features
-- Standardization of numeric features
-- Imputation of missing categorical features
-- One-hot encoding of categorical features
-- Safe handling of categories that appear in the future test month but not in training
+- Median imputation for numeric variables
+- Standardization of numeric variables
+- Categorical missing-value imputation
+- One-hot encoding of categorical variables
+- Handling of previously unseen test-set categories
 
-This prevents information from the March 2026 holdout period from influencing model preparation.
+The pipeline is implemented using scikit-learn preprocessing components so the same fitted transformations can be consistently applied during training and inference.
 
----
+See [`notebooks/02_preprocessing.ipynb`](notebooks/02_preprocessing.ipynb) for the preprocessing workflow.
 
-## Project Structure
+## Repository Structure
 
 ```text
 IDX-Exchange-Data-Science/
@@ -150,71 +154,43 @@ IDX-Exchange-Data-Science/
 └── README.md
 ```
 
-Raw and processed CRMLS datasets are stored locally and are **not included in this public repository**.
+Local raw and processed datasets are excluded from version control.
 
----
+## Project Status
 
-## Project Progress
-
-- [x] Data access and multi-month integration
-- [x] Residential single-family filtering
-- [x] Exploratory data analysis
-- [x] Missing-value and anomaly investigation
-- [x] Initial feature relationship analysis
-- [x] Geographic and temporal analysis
-- [x] Duplicate investigation and exact-duplicate removal
-- [x] Target-quality investigation and cleaning
-- [x] Leakage-safe initial feature selection
-- [x] Chronological train/test split
-- [ ] Finalize and validate preprocessing pipeline
-- [ ] Baseline Linear Regression
-- [ ] Decision Tree and Random Forest comparison
-- [ ] Feature engineering
-- [ ] School-district geographic features
-- [ ] Gradient boosting / advanced models
-- [ ] Expanded model evaluation
-- [ ] Final documentation and presentation
-
----
-
-## Current Status — Week 3
-
-The project has progressed from exploratory analysis into data preprocessing.
-
-The working dataset combines **27 months of CRMLS data from January 2024 through March 2026** and contains **297,193 observations after current duplicate and target-quality cleaning**.
-
-The March 2026 data is isolated as a future holdout set with **11,561 transactions**, while **285,632 earlier transactions** are currently available for training.
-
-The current focus is completing and validating the training-only preprocessing pipeline so that missing-value handling, scaling, and categorical encoding do not introduce information from the test period.
-
----
-
-## Meeting Update
-
-**This week's progress:**
-
-I completed the exploratory analysis and moved into Week 3 preprocessing. I am working with all 27 available months of CRMLS data from January 2024 through March 2026, giving approximately 297,000 single-family residential transactions.
-
-During preprocessing, I investigated duplicate `ListingKey` values rather than automatically removing them. Some repeated keys had different close dates or prices, so I retained those records and removed only confirmed exact duplicates.
-
-I also investigated invalid and extreme target values. Missing and non-positive close prices were removed, along with a very small number of implausible prices above $100 million. After current cleaning, 297,193 observations remain.
-
-Based on the updated project guidance, I am restricting model inputs to characteristics that would be available for any property, including an off-market home. This means listing-dependent variables such as list price and days on market are excluded.
-
-For model evaluation, I reserved March 2026 as the held-out test month. This gives me **285,632 training observations and 11,561 test observations**. The preprocessing pipeline is being structured so that imputation, scaling, and categorical encoding learn only from the training data, preventing test-set leakage.
-
-**Next step:** finish validating the preprocessing pipeline and then begin the Week 4 Linear Regression baseline, evaluated on the held-out March 2026 data using R².
-
----
+| Stage | Status |
+| --- | --- |
+| Data access and integration | Complete |
+| Exploratory data analysis | Complete |
+| Data-quality investigation | Complete |
+| Duplicate and target cleaning | Complete |
+| Chronological train/test split | Complete |
+| Preprocessing pipeline | In progress |
+| Linear Regression baseline | Not started |
+| Decision Tree / Random Forest comparison | Not started |
+| Feature engineering | Not started |
+| Advanced models | Not started |
+| Expanded evaluation | Not started |
 
 ## Roadmap
 
-**Week 1:** Environment setup and CRMLS data access  
-**Week 2:** Exploratory data analysis — Complete  
-**Week 3:** Data preprocessing — In progress  
-**Week 4:** Linear Regression baseline  
-**Week 5:** Decision Tree and Random Forest comparison  
-**Week 6:** Feature engineering and school-district geography  
-**Week 7:** Gradient boosting and advanced models  
-**Week 8:** Expanded evaluation using R², MAPE, and MdAPE  
-**Weeks 9–12:** Optional application, documentation, presentation, and final handoff
+The project follows a 12-week development plan:
+
+1. **Setup and data access** — Complete
+2. **Exploratory data analysis** — Complete
+3. **Data preprocessing** — In progress
+4. **Linear Regression baseline**
+5. **Decision Tree and Random Forest comparison**
+6. **Feature engineering and school-district geographic features**
+7. **Gradient boosting and hyperparameter tuning**
+8. **Expanded evaluation using R², MAPE, and MdAPE**
+9. **Optional prediction application**
+10. **Documentation**
+11. **Presentation preparation**
+12. **Final presentation and project handoff**
+
+## Next Steps
+
+The immediate objective is to complete and validate the preprocessing pipeline end-to-end.
+
+The next modeling stage will establish a **Linear Regression baseline** and evaluate performance on the held-out March 2026 test set using **R²**. Subsequent stages will compare tree-based models, expand the feature set, introduce additional geographic information, and evaluate more advanced gradient-boosting approaches.
