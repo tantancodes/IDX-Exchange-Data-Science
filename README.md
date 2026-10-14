@@ -141,15 +141,53 @@ The pipeline is implemented using scikit-learn preprocessing components so the s
 
 See [`notebooks/02_preprocessing.ipynb`](notebooks/02_preprocessing.ipynb) for the preprocessing workflow.
 
+## Baseline Model (Week 4)
+
+[`notebooks/03_baseline_model.ipynb`](notebooks/03_baseline_model.ipynb) cleans the raw files from scratch and fits a Linear Regression on the six features above.
+
+### Evaluation Design
+
+Following the IDX AVM best-practices standard:
+
+- Each sale is assigned to its month by `CloseDate`. Models train on all prior months, are validated on **February 2026**, and are tested once on **March 2026**.
+- The same pipeline is re-run at three earlier cutoffs (November 2025 – January 2026) to check that results are stable over time.
+- The 0.5th / 99.5th percentile `ClosePrice` bounds are computed from each training period only and then applied unchanged to the evaluation month. Metrics are reported both within those bounds and for all valid sales.
+- Imputation, scaling, and encoding are fit inside a scikit-learn `Pipeline` on training data only.
+
+Cleaning in notebook 03 adds a few rules on top of notebook 02:
+
+- Records with `CloseDate` before `ListingContractDate` are removed (41 rows). The listing date is used only for this check, never as a model input.
+- Physical values outside plausible bounds (living area 300–30,000 sq ft, 1–20 bedrooms or bathrooms) are treated as missing.
+- Missing-value indicator columns are added for the numeric features.
+
+### Results
+
+A log-log variant (log price regressed on log living area and log lot size) is reported alongside the required baseline as a stronger linear reference point.
+
+March 2026 test results, for sales within the training-derived price bounds (98.8% of March sales):
+
+| Model | R² | MdAPE | MAPE | MAE |
+| --- | ---: | ---: | ---: | ---: |
+| Linear Regression (baseline) | **0.812** | 16.6% | 22.6% | $238,462 |
+| Log-log Linear Regression | 0.826 | 10.0% | 14.1% | $186,273 |
+
+- Baseline R² stayed between 0.80 and 0.81 at every historical cutoff.
+- Training on all available months outperformed 3-, 6-, 12-, and 18-month windows.
+- Error is largest for homes under about $560K (29.6% MdAPE) and in Inland Empire and high-desert cities.
+- Including the ~1.2% of sales outside the price bounds lowers baseline R² to 0.63, while MdAPE barely changes.
+
 ## Repository Structure
 
 ```text
 IDX-Exchange-Data-Science/
 ├── notebooks/
 │   ├── 01_exploration.ipynb
-│   └── 02_preprocessing.ipynb
+│   ├── 02_preprocessing.ipynb
+│   └── 03_baseline_model.ipynb
 ├── scripts/
 │   └── crmls_sold.py
+├── results/              # metrics and data snapshot (local; CSVs are git-ignored)
+├── requirements.txt
 ├── .gitignore
 └── README.md
 ```
@@ -165,8 +203,8 @@ Local raw and processed datasets are excluded from version control.
 | Data-quality investigation | Complete |
 | Duplicate and target cleaning | Complete |
 | Chronological train/test split | Complete |
-| Preprocessing pipeline | In progress |
-| Linear Regression baseline | Not started |
+| Preprocessing pipeline | Complete |
+| Linear Regression baseline | Complete |
 | Decision Tree / Random Forest comparison | Not started |
 | Feature engineering | Not started |
 | Advanced models | Not started |
@@ -178,8 +216,8 @@ The project follows a 12-week development plan:
 
 1. **Setup and data access** — Complete
 2. **Exploratory data analysis** — Complete
-3. **Data preprocessing** — In progress
-4. **Linear Regression baseline**
+3. **Data preprocessing** — Complete
+4. **Linear Regression baseline** — Complete
 5. **Decision Tree and Random Forest comparison**
 6. **Feature engineering and school-district geographic features**
 7. **Gradient boosting and hyperparameter tuning**
@@ -189,8 +227,15 @@ The project follows a 12-week development plan:
 11. **Presentation preparation**
 12. **Final presentation and project handoff**
 
+## Reproducing
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Place the `CRMLSSold*.csv` files in `data/raw/` and run the notebooks in order. Notebook 03 prints a fingerprint of the source files (`2ff3877a04bd` for the January 2024 – March 2026 pull) and saves per-file hashes to `results/data_snapshot.csv` and all metrics to `results/baseline_metrics.csv`.
+
 ## Next Steps
 
-The immediate objective is to complete and validate the preprocessing pipeline end-to-end.
-
-The next modeling stage will establish a **Linear Regression baseline** and evaluate performance on the held-out March 2026 test set using **R²**. Subsequent stages will compare tree-based models, expand the feature set, introduce additional geographic information, and evaluate more advanced gradient-boosting approaches.
+Week 5 compares **Decision Tree and Random Forest** regressors against both linear baselines. Model selection will use February 2026 and the earlier cutoffs; the March 2026 test month is not used for those decisions.
