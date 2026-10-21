@@ -1,6 +1,11 @@
 # Raw CRMLS data — never commit
 data/
 *.csv
+# Small metric tables are part of the results and are tracked
+!results/*.csv
+
+# Fitted models are large (~250 MB); rebuild them from the notebooks
+models/*.joblib
 
 # Python virtual environment
 .venv/
