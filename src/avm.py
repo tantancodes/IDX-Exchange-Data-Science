@@ -453,3 +453,64 @@ def format_table(table: pd.DataFrame, pct_decimals: int = 1) -> pd.DataFrame:
         elif name in {"N", "n", "negative_predictions"}:
             out[col] = values.astype(int).map("{:,}".format)
     return out.rename(columns=METRIC_LABELS)
+
+
+# --------------------------------------------------------------------------
+# Presentation
+# --------------------------------------------------------------------------
+
+LINEAR, LOG_LINEAR = "Linear regression", "Log-log linear regression"
+TREE, FOREST = "Decision tree", "Random forest"
+MODEL_ORDER = [LINEAR, LOG_LINEAR, TREE, FOREST]
+MODEL_COLORS = {LINEAR: "#9a9a9a", LOG_LINEAR: "#3b6ea8", TREE: "#e08a2e", FOREST: "#1f7a45"}
+DISPLAY_NAMES = {LINEAR: "Linear regression (baseline)", LOG_LINEAR: "Log-log linear regression",
+                 TREE: "Decision tree", FOREST: "Random forest"}
+
+
+def assert_metrics_match(run: dict, saved: pd.DataFrame) -> None:
+    """Check a rescored cutoff against saved metric rows at displayed precision.
+
+    MdAPE and other percentages are compared to 1 decimal, R² to 3, MAE to the
+    dollar, and N exactly, which is the precision used in the result tables.
+    """
+    precision = {"MdAPE_pct": 1, "MAPE_pct": 1, "PPE10_pct": 1, "PPE20_pct": 1,
+                 "R2": 3, "MAE_USD": 0}
+    for row in saved.itertuples():
+        scored = run["results"][row.model][row.scope]
+        assert scored["N"] == row.N, (row.model, row.scope, "N")
+        for metric, digits in precision.items():
+            assert round(scored[metric], digits) == round(getattr(row, metric), digits), \
+                (row.model, row.scope, metric, scored[metric], getattr(row, metric))
+
+
+def highlight_table(table: pd.DataFrame, formats: dict[str, str],
+                    best: dict[str, str]) -> str:
+    """HTML table with formatted values and the best value per column in bold.
+
+    ``best`` maps a column to "min" or "max". Plain HTML is used because
+    pandas' Styler needs jinja2, which is not a project dependency.
+    """
+    winners = {col: (table[col].idxmin() if rule == "min" else table[col].idxmax())
+               for col, rule in best.items()}
+    head = "".join(f"<th style='text-align:right;padding:6px 12px'>{col}</th>" for col in table.columns)
+    rows = []
+    for index in table.index:
+        cells = []
+        for col in table.columns:
+            # Read cell by cell: iterrows would upcast integer columns to float.
+            text = formats.get(col, "{}").format(table.at[index, col])
+            style = "text-align:right;padding:6px 12px"
+            if winners.get(col) == index:
+                style += ";font-weight:bold;background:#dcefe3"
+            cells.append(f"<td style='{style}'>{text}</td>")
+        rows.append(f"<tr><th style='text-align:left;padding:6px 12px'>{index}</th>{''.join(cells)}</tr>")
+    return ("<table style='border-collapse:collapse;font-size:14px'>"
+            f"<thead><tr><th></th>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>")
+
+
+def finish_chart(fig, ax, title: str, subtitle: str, source: str) -> None:
+    """Takeaway title, explanatory subtitle, and a source note under the axes."""
+    fig.suptitle(title, x=0.02, ha="left", fontsize=13, fontweight="bold")
+    ax.set_title(subtitle, loc="left", fontsize=10, color="#555555")
+    fig.text(0.02, 0.01, source, fontsize=8.5, color="#666666", ha="left")
+    fig.tight_layout(rect=(0, 0.04, 1, 1))

@@ -19,3 +19,6 @@ __pycache__/
 
 # Jupyter temporary files
 .ipynb_checkpoints/
+
+# Per-home predictions contain licensed CRMLS sale records; keep them local
+results/march_predictions.csv
