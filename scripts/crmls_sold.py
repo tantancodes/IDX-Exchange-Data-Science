@@ -1,15 +1,39 @@
 
 import csv
-import requests
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
+
+import requests
+
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_env(path):
+    """Set variables from a KEY=value file without overriding ones already set."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            name, _, value = line.partition("=")
+            os.environ.setdefault(name.strip(), value.strip().strip("'\""))
+
+
+load_env(ENV_FILE)
+token_key = os.environ.get("IDX_TOKEN_KEY")
+if not token_key:
+    sys.exit("Set IDX_TOKEN_KEY in the environment or in .env at the repository root "
+             "(see .env.example). Ask IDX Exchange for the key.")
 
 # Define the API endpoint
 url = 'https://api-trestle.corelogic.com/trestle/odata/Property'
 
 # Get token from IDX Exchange secure proxy instead of exposing CoreLogic credentials
-auth_endpoint = 'https://idxexchange.com/internal-api/trestle_token.php?key=IDXEXCHANGE2026_CHANGE_THIS'
+auth_endpoint = 'https://idxexchange.com/internal-api/trestle_token.php'
 
-response = requests.get(auth_endpoint)
+response = requests.get(auth_endpoint, params={'key': token_key}, timeout=60)
 response.raise_for_status()
 
 # Parse the response to extract the token

@@ -11,6 +11,9 @@ models/**/*.joblib
 # Python virtual environment
 .venv/
 
+# Local secrets (scripts/crmls_sold.py reads IDX_TOKEN_KEY from here)
+.env
+
 # Python cache
 __pycache__/
 *.pyc
