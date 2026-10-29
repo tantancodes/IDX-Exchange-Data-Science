@@ -26,16 +26,9 @@ import xgboost
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import avm  # noqa: E402  (the app imports avm the same way, so the saved pipeline unpickles)
+from config import (APP_DIR, DATA_DIR, DISTRICT_CACHE, DISTRICT_SHAPEFILE,  # noqa: E402
+                    EXPECTED_FINGERPRINT, LOCK_COMMIT, RESULTS_DIR, ROOT)
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data" / "raw"
-DISTRICT_SHAPEFILE = ROOT / "data" / "external" / "school_districts_2024_25" / "DistrictAreas2425.shp"
-DISTRICT_CACHE = ROOT / "data" / "processed" / "school_district_by_location.csv"
-RESULTS_DIR = ROOT / "results"
-APP_DIR = ROOT / "models" / "app"
-
-EXPECTED_FINGERPRINT = "66cab54017ab"
-LOCK_COMMIT = "8d41984"
 LAST_MONTH = avm.TEAM_TEST_MONTH
 RANGE_COLUMNS = ["LivingArea", "LotSizeSquareFeet", "BedroomsTotal", "BathroomsTotalInteger", "YearBuilt"]
 # About 50 m; small enough that district labels barely change, large enough to shrink the file.
@@ -43,11 +36,8 @@ SIMPLIFY_DEGREES = 0.0005
 
 
 def load_sales() -> tuple[pd.DataFrame, str]:
-    raw, _, fingerprint = avm.load_raw(DATA_DIR)
-    assert fingerprint == EXPECTED_FINGERPRINT, f"Data pull changed: {fingerprint}"
-    df, _, _ = avm.clean(raw, drop_rereported=True)
-    df, _ = avm.attach_school_districts(df, DISTRICT_CACHE, DISTRICT_SHAPEFILE)
-    df["County"] = avm.clean_text(df["CountyOrParish"])
+    df, _, fingerprint = avm.load_clean_sales(DATA_DIR, DISTRICT_CACHE, DISTRICT_SHAPEFILE,
+                                              EXPECTED_FINGERPRINT)
     return df, fingerprint
 
 

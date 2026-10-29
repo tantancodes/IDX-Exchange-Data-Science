@@ -8,12 +8,10 @@ Build the model and lookups first, then launch from the repository root:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 import altair as alt
-import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -21,6 +19,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 import avm  # noqa: E402  (the saved pipeline refers to avm.add_engineered_features)
+import predict as predictor  # noqa: E402  (same input preparation as python -m src.predict)
 
 APP_DIR = ROOT / "models" / "app"
 RESULTS_DIR = ROOT / "results"
@@ -40,37 +39,18 @@ def md_dollars(value: float) -> str:
     return dollars(value).replace("$", "\\$")
 
 
-def month_name(month: str) -> str:
-    return pd.Timestamp(f"{month[:4]}-{month[4:]}-01").strftime("%B %Y")
-
-
 @st.cache_resource
-def load_model():
-    metadata = json.loads((APP_DIR / "metadata.json").read_text())
-    feature_list = json.loads((APP_DIR / "feature_list.json").read_text())
-    model = joblib.load(APP_DIR / "avm_model.joblib")
-    expected = list(model.feature_names_in_)
-    # A mismatch means the model and its saved feature list come from different runs.
-    assert feature_list == expected == metadata["inputs"], (feature_list, expected)
-    features = avm.FeatureSet(metadata["features"]["name"], tuple(metadata["features"]["numeric"]),
-                              tuple(metadata["features"]["categorical"]))
-    assert features.inputs == feature_list
-    return model, metadata, features
-
-
-@st.cache_resource
-def load_districts():
-    import geopandas
-    return geopandas.read_file(APP_DIR / "school_districts.geojson")
+def load_artifacts():
+    # Includes the check that the saved feature list matches the model's expected inputs.
+    return predictor.load_artifacts(APP_DIR)
 
 
 @st.cache_data
 def load_tables():
-    zips = pd.read_csv(APP_DIR / "zip_lookup.csv", dtype={"PostalCode": str, "school_district": str})
     cities = pd.read_csv(APP_DIR / "zip_cities.csv", dtype={"PostalCode": str})
     bands = pd.read_csv(APP_DIR / "error_bands.csv")
     summary = pd.read_csv(RESULTS_DIR / "metrics_summary.csv", dtype={"month": str})
-    return zips.set_index("PostalCode"), cities, bands, summary
+    return cities, bands, summary
 
 
 missing = [name for name in REQUIRED if not (APP_DIR / name).exists()]
@@ -79,8 +59,9 @@ if missing:
              "Run `python -m src.train` from the repository root first.")
     st.stop()
 
-MODEL, META, FEATURES = load_model()
-ZIPS, CITIES, BANDS, SUMMARY = load_tables()
+ART = load_artifacts()
+META, ZIPS = ART.metadata, ART.zips
+CITIES, BANDS, SUMMARY = load_tables()
 EVAL = META["evaluation"]
 VALUATION_YEAR = META["valuation_year"]
 
@@ -138,26 +119,17 @@ def estimate_page():
             latitude = c6.number_input("Latitude", value=round(latitude, 5), format="%.5f")
             longitude = c7.number_input("Longitude", value=round(longitude, 5), format="%.5f")
 
+    home = pd.DataFrame([{
+        "PostalCode": zip_code, "City": city, "LivingArea": living_area, "LotSizeSquareFeet": lot_size,
+        "BedroomsTotal": beds, "BathroomsTotalInteger": baths, "YearBuilt": year_built,
+        "Latitude": latitude if exact else np.nan, "Longitude": longitude if exact else np.nan,
+    }])
+    result = predictor.predict(home, ART).iloc[0]
+    estimate = float(result["estimate"])
     notes = []
-    inside_ca = (avm.CA_LATITUDE[0] <= latitude <= avm.CA_LATITUDE[1]
-                 and avm.CA_LONGITUDE[0] <= longitude <= avm.CA_LONGITUDE[1])
-    if not inside_ca:
+    if result["coordinates_from"] == "missing":
         notes.append("The coordinates are outside California, so they are treated as missing, "
                      "as in training.")
-        latitude = longitude = np.nan
-    district = avm.assign_school_districts(pd.Series([latitude]), pd.Series([longitude]), load_districts())
-    district_code = district.at[0, "SchoolDistrict"]
-    district_name = district.at[0, "SchoolDistrictName"]
-
-    raw = pd.DataFrame([{
-        "LivingArea": living_area, "LotSizeSquareFeet": lot_size if lot_size > 0 else np.nan,
-        "BedroomsTotal": beds, "BathroomsTotalInteger": baths, "YearBuilt": year_built,
-        "SaleYear": VALUATION_YEAR, "Latitude": latitude, "Longitude": longitude,
-        "City": city, "PostalCode": zip_code, "SchoolDistrict": district_code,
-    }])
-    x = avm.model_inputs(raw, FEATURES)
-    assert list(x.columns) == list(MODEL.feature_names_in_)
-    estimate = float(MODEL.predict(x)[0])
 
     band = BANDS.loc[(BANDS["pred_low"] <= estimate) & (estimate < BANDS["pred_high"])].iloc[0]
     notes += range_warnings({"LivingArea": living_area, "LotSizeSquareFeet": lot_size or np.nan,
@@ -191,8 +163,10 @@ def estimate_page():
         st.subheader("What the model used")
         used = pd.DataFrame({"Value": [
             f"{zip_code}, {city.title()}",
-            f"{latitude:.4f}, {longitude:.4f}" + ("" if exact else " (ZIP median)") if inside_ca else "missing",
-            district_name if isinstance(district_name, str) else "not found",
+            ("missing" if result["coordinates_from"] == "missing" else
+             f"{result['Latitude']:.4f}, {result['Longitude']:.4f}"
+             + (" (ZIP median)" if result["coordinates_from"] == "ZIP median" else "")),
+            result["SchoolDistrictName"] if isinstance(result["SchoolDistrictName"], str) else "not found",
             f"{VALUATION_YEAR - year_built} years (built {year_built}, valued in {VALUATION_YEAR})",
             f"{living_area:,} sq ft, lot {lot_size:,} sq ft" if lot_size else f"{living_area:,} sq ft, lot unknown",
             f"{beds} bed / {baths} bath",

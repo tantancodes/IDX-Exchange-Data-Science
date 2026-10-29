@@ -390,6 +390,22 @@ def assign_school_districts(latitude: pd.Series, longitude: pd.Series,
                          "SchoolDistrictType": kind})
 
 
+def load_clean_sales(data_dir: Path, district_cache: Path, shapefile: Path | None = None,
+                     expected_fingerprint: str | None = None
+                     ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Raw files → cleaned sales (Week 6 rules) with school districts and county.
+
+    Returns the sales, the cleaning-step table, and the snapshot fingerprint.
+    """
+    raw, _, fingerprint = load_raw(data_dir)
+    if expected_fingerprint is not None:
+        assert fingerprint == expected_fingerprint, f"Data pull changed: {fingerprint}"
+    df, steps, _ = clean(raw, drop_rereported=True)
+    df, _ = attach_school_districts(df, district_cache, shapefile)
+    df["County"] = clean_text(df["CountyOrParish"])
+    return df, steps, fingerprint
+
+
 DISTRICT_LOCATION = ["ListingKey", "Latitude", "Longitude"]
 
 
