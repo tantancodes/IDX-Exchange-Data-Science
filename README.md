@@ -64,9 +64,11 @@ All are run from the repository root and work without the notebooks.
 
 Three pages:
 
-- **Estimate.** Enter a home and get an estimate, with a typical-error range taken from the April test for similarly priced homes. Warnings appear for unusual inputs, coordinates outside California, ZIPs with few sales, and estimates near the model's price ceiling.
-- **Model comparison.** The April scoreboard and month-by-month error for every model.
+- **Estimate.** Enter a home and get an estimate, with the middle-half and 80% ranges from the April test for similarly priced homes. Below it, a waterfall of per-feature contributions (XGBoost's `pred_contribs`, grouped into location, size, age, lot, school district and so on) and a map of the home's school district. Notices appear for unusual inputs, coordinates outside California, ZIPs with few sales, and estimates near the model's price ceiling.
+- **Model comparison.** The April scoreboard and month-by-month error for every model, for sales inside the training price range or all April sales.
 - **How it works.** The data, the leakage rules, the evaluation and the limitations, in plain language.
+
+Styling lives in `.streamlit/config.toml` (theme) and `assets/style.css`. `docs/demo.mp4` and `docs/demo.gif` are a 26-second recording of the app.
 
 ![Estimate page](docs/screenshots/app_estimate.png)
 
@@ -74,12 +76,15 @@ Three pages:
 
 ![How it works page](docs/screenshots/app_how_it_works.png)
 
+<img src="docs/screenshots/app_estimate_mobile.png" alt="Estimate page on a phone" width="320">
+
 The app's model is the frozen final configuration refit on all months through April 2026, after the April test was done. **Its accuracy figures come from the April test of the same configuration trained through March.** The refit has no later month to be scored on.
 
 ## Repository layout
 
 ```text
 app.py                     Streamlit app
+assets/style.css           App styles (theme colors in .streamlit/config.toml)
 src/
   avm.py                   Loading, cleaning, features, models, splits, metrics (shared by everything)
   config.py                Paths and fixed reference values
@@ -87,6 +92,7 @@ src/
   train.py                 python -m src.train
   evaluate.py              python -m src.evaluate
   predict.py               python -m src.predict (the app uses the same input preparation)
+  explain.py               Per-feature contributions for the app's "why this price" chart
 notebooks/
   01_exploration.ipynb         Week 2: distributions, missingness, price by city and month
   02_preprocessing.ipynb       Week 3: duplicates, target cleaning, first train/test split
@@ -97,7 +103,7 @@ notebooks/
   07_evaluation.ipynb          Week 8: April 2026 test, error breakdowns, presentation summary
 results/                   Aggregate metrics, tuning grids, bootstrap intervals, final config
 models/app/                App metadata and boundaries (model and lookups are local only)
-docs/screenshots/          App screenshots
+docs/screenshots/          App screenshots; docs/demo.mp4 and demo.gif
 scripts/crmls_sold.py      Optional download from the Trestle API
 data/                      Local only: raw/, processed/, external/
 ```
@@ -168,8 +174,8 @@ Every model frozen before April, trained on all 294,072 sales through March 2026
 | Model | Features | MdAPE | Within 10% | Within 20% | R² | MAE |
 |---|---|---:|---:|---:|---:|---:|
 | Linear regression (Week 4 baseline) | A | 16.46% | 32.3% | 58.5% | 0.817 | $247,747 |
-| Log-log linear regression | A | 10.22% | 49.0% | 78.6% | 0.839 | $194,997 |
-| Decision tree | A | 10.35% | 48.9% | 76.2% | 0.834 | $203,108 |
+| Log-log linear regression | A | 10.22% | 48.9% | 78.6% | 0.839 | $194,997 |
+| Decision tree | A | 10.35% | 48.8% | 76.2% | 0.834 | $203,108 |
 | Random forest | A | 9.16% | 53.3% | 80.0% | 0.862 | $182,676 |
 | Random forest | B without ratios | 7.82% | 59.8% | 84.3% | 0.887 | $160,711 |
 | LightGBM | B without ratios | 7.65% | 60.6% | 85.5% | 0.902 | $151,944 |
@@ -184,7 +190,7 @@ On all 12,022 April sales, XGBoost's MdAPE is 7.83% and its R² 0.620. Every mod
   - LightGBM and XGBoost beat the forest by 0.2–0.4 points in the backtests.
   - On March and April the difference was within resampling noise.
   - The saved model fell from 268 MB to 4 MB.
-- **Why XGBoost over LightGBM.** The two were indistinguishable at every cutoff. The rule fixed before tuning said to prefer the smaller model within 0.1 points, which is XGBoost. LightGBM was 0.05 points lower on April, but switching after seeing the test would have made April a selection set.
+- **Why XGBoost over LightGBM.** The two were indistinguishable at every cutoff. The rule fixed before tuning said to prefer the smaller model within 0.1 points, which is XGBoost. LightGBM was 0.06 points lower on April, but switching after seeing the test would have made April a selection set.
 - **Stable over time.** The final model's MdAPE stayed between 7.57% and 7.90% from December 2025 to April 2026.
 
 ## Limitations
@@ -192,7 +198,7 @@ On all 12,022 April sales, XGBoost's MdAPE is 7.83% and its R² 0.620. Every mod
 - **The top of the market.** A tree model cannot predict above the highest price it was trained on: $8.30M for the tested model, $8.40M for the app model. The top 1% of April sales ($6.62M and up) were under-predicted by a median of 38%, and 80 of those 121 homes sold above the training maximum.
 - **Older homes and some markets.**
   - Error rises with age, from 5.3% for homes up to 10 years old to 10.8% for homes over 75 years old.
-  - Error is highest in the Bay Area: Alameda 10.3%, and Oakland at 16.2%, the worst city.
+  - Error is highest in the Bay Area: Alameda 10.3%, and Oakland at 16.2%, the worst of the 15 highest-volume cities.
 - **No time trend.** In a rising market the estimates lag: the median April error was −1.85%.
 - **Condition is unknown.** Renovations, views, pools and condition are not inputs.
 - **Location without coordinates.** The app and `src.predict` fall back to the ZIP's median sale location, so the district and fine location can be off.
