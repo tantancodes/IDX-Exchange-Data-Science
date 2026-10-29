@@ -366,9 +366,13 @@ def assign_school_districts(latitude: pd.Series, longitude: pd.Series,
     hits = hits.reset_index().sort_values(["index", "CDCode"])
     first = hits.drop_duplicates(["index", "DistrictTy"]).set_index(["index", "DistrictTy"])
 
+    found = set(first.index.get_level_values("DistrictTy"))
+
     def by_type(kind, column):
-        rows = first.xs(kind, level="DistrictTy") if kind in first.index.levels[1] else first.iloc[:0]
-        return rows[column].reindex(latitude.index)
+        # A single point usually matches one or two district types, not all three.
+        if kind not in found:
+            return pd.Series(np.nan, index=latitude.index, dtype=object)
+        return first.xs(kind, level="DistrictTy")[column].reindex(latitude.index)
 
     unified_code, unified_name = by_type("Unified", "CDCode"), by_type("Unified", "DistrictNa")
     elem_code, elem_name = by_type("Elementary", "CDCode"), by_type("Elementary", "DistrictNa")
@@ -658,6 +662,23 @@ def run_cutoff(data: pd.DataFrame, eval_month: str,
             "train_price_range": (train_fit[TARGET].min(), train_fit[TARGET].max()),
             "lower": lower, "upper": upper, "coverage": in_range.mean(),
             "evaluate": evaluate, "in_range": in_range, "results": results}
+
+
+def fit_through(data: pd.DataFrame, last_month: str, factory: ModelFactory,
+                inputs: FeatureSet = BASE_FEATURES) -> tuple[RegressorMixin, dict]:
+    """Fit one model on every month up to and including ``last_month``.
+
+    Uses the same rule as ``run_cutoff``: price bounds are the training
+    months' 0.5th/99.5th percentiles and the model is fitted only on sales
+    inside them. Used for the deployed model once evaluation is finished.
+    """
+    train = data.loc[data["CloseMonth"] <= last_month]
+    lower, upper = train[TARGET].quantile([LOW_Q, HIGH_Q])
+    train_fit = train.loc[train[TARGET].between(lower, upper)]
+    model = factory().fit(model_inputs(train_fit, inputs), train_fit[TARGET])
+    months = sorted(train_fit["CloseMonth"].unique())
+    return model, {"train_months": [months[0], months[-1]], "n_train": int(len(train_fit)),
+                   "price_bounds": [float(lower), float(upper)], "train_fit": train_fit}
 
 
 def split_name(month: str, val_month: str = VAL_MONTH, test_month: str = TEST_MONTH) -> str:
