@@ -1,0 +1,13 @@
+[
+  "LivingArea",
+  "LotSizeSquareFeet",
+  "BedroomsTotal",
+  "BathroomsTotalInteger",
+  "YearBuilt",
+  "SaleYear",
+  "Latitude",
+  "Longitude",
+  "City",
+  "PostalCode",
+  "SchoolDistrict"
+]

@@ -1,0 +1,138 @@
+{
+  "model": "XGBoost",
+  "params": {
+    "learning_rate": 0.1,
+    "max_depth": 10,
+    "n_estimators": 500,
+    "min_child_weight": 20
+  },
+  "log_target": true,
+  "features": {
+    "name": "B without ratios",
+    "numeric": [
+      "LivingArea",
+      "LotSizeSquareFeet",
+      "BedroomsTotal",
+      "BathroomsTotalInteger",
+      "AgeAtSale",
+      "Latitude",
+      "Longitude"
+    ],
+    "categorical": [
+      "City",
+      "PostalCode",
+      "SchoolDistrict"
+    ]
+  },
+  "inputs": [
+    "LivingArea",
+    "LotSizeSquareFeet",
+    "BedroomsTotal",
+    "BathroomsTotalInteger",
+    "YearBuilt",
+    "SaleYear",
+    "Latitude",
+    "Longitude",
+    "City",
+    "PostalCode",
+    "SchoolDistrict"
+  ],
+  "trained_through": "202604",
+  "train_months": [
+    "202401",
+    "202604"
+  ],
+  "n_train": 305986,
+  "price_bounds": [
+    190000.0,
+    8400000.0
+  ],
+  "train_price_range": [
+    190000.0,
+    8400000.0
+  ],
+  "valuation_year": 2026,
+  "input_ranges": {
+    "LivingArea": {
+      "p1": 748.0,
+      "p99": 5300.0,
+      "min": 300.0,
+      "max": 17153.0
+    },
+    "LotSizeSquareFeet": {
+      "p1": 1823.46,
+      "p99": 244807.2,
+      "min": 0.01,
+      "max": 2087220960.0
+    },
+    "BedroomsTotal": {
+      "p1": 2.0,
+      "p99": 6.0,
+      "min": 1.0,
+      "max": 17.0
+    },
+    "BathroomsTotalInteger": {
+      "p1": 1.0,
+      "p99": 6.0,
+      "min": 1.0,
+      "max": 20.0
+    },
+    "YearBuilt": {
+      "p1": 1910.0,
+      "p99": 2025.0,
+      "min": 1854.0,
+      "max": 2026.0
+    }
+  },
+  "evaluation": {
+    "source": "April 2026 test of the same configuration trained through March 2026",
+    "test_month": "202604",
+    "train_months": [
+      "202401",
+      "202603"
+    ],
+    "price_bounds": [
+      190000.0,
+      8300000.0
+    ],
+    "coverage": 0.9890201297621029,
+    "filtered": {
+      "MdAPE_pct": 7.703780505445882,
+      "PPE10_pct": 60.3784693019344,
+      "PPE20_pct": 85.48359966358284,
+      "R2": 0.8976296506181122,
+      "MAE_USD": 153502.3136993797,
+      "N": 11890.0,
+      "median_bias_pct": -1.8473994624921533
+    },
+    "all": {
+      "MdAPE_pct": 7.833612763865894,
+      "PPE10_pct": 59.7155215438363,
+      "PPE20_pct": 84.58659124937614,
+      "R2": 0.6201536938747336,
+      "MAE_USD": 205101.9912396024,
+      "N": 12022.0,
+      "median_bias_pct": -1.8646343047299043
+    },
+    "top_1pct": {
+      "price_cut": 6619749.999999977,
+      "n": 121,
+      "median_signed_error_pct": -37.91980459770115,
+      "n_above_train_max": 80
+    }
+  },
+  "lock_commit": "8d41984",
+  "data_snapshot": "66cab54017ab",
+  "check_through_march_max_relative_diff": 4.765502947994079e-08,
+  "district_boundary_simplify_degrees": 0.0005,
+  "district_label_agreement": 0.9994,
+  "model_file_mb": 4.341518,
+  "load_seconds": 0.02106504194671288,
+  "versions": {
+    "python": "3.14.7",
+    "sklearn": "1.9.1",
+    "xgboost": "3.4.1",
+    "pandas": "3.0.6",
+    "numpy": "2.5.3"
+  }
+}

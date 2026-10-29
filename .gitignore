@@ -4,8 +4,9 @@ data/
 # Small metric tables are part of the results and are tracked
 !results/*.csv
 
-# Fitted models are large (~250 MB); rebuild them from the notebooks
-models/*.joblib
+# Fitted models are rebuilt from the notebooks (the Week 5 forest is ~250 MB)
+# and by python -m src.train (the app model)
+models/**/*.joblib
 
 # Python virtual environment
 .venv/
