@@ -1,0 +1,26 @@
+# Colors, fonts and radius follow tantan.live (globals.css in the portfolio repo).
+[theme]
+base = "light"
+primaryColor = "#0a0a0a"
+backgroundColor = "#fafafa"
+secondaryBackgroundColor = "#f3f3f3"
+textColor = "#0a0a0a"
+linkColor = "#0a0a0a"
+borderColor = "#e5e5e5"
+showWidgetBorder = true
+baseRadius = "10px"
+baseFontSize = 16
+font = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@300..700&display=swap, sans-serif"
+headingFont = "Geist:https://fonts.googleapis.com/css2?family=Geist:wght@300..700&display=swap, sans-serif"
+headingFontWeights = 500
+codeTextColor = "#0a0a0a"
+codeBackgroundColor = "#efefef"
+codeFont = "Geist Mono:https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&display=swap, monospace"
+chartCategoricalColors = ["#0a0a0a", "#a3a3a3", "#d4d4d4", "#525252", "#737373", "#e5e5e5"]
+
+[client]
+toolbarMode = "viewer"
+showSidebarNavigation = false
+
+[browser]
+gatherUsageStats = false
