@@ -1,241 +1,233 @@
-# IDX Exchange — California Property Price Prediction
+# IDX Exchange: California home price model (AVM)
 
-Machine learning project for predicting the closing price (`ClosePrice`) of single-family residential properties in California using historical CRMLS transaction data.
+An automated valuation model for California single-family homes. Given a home's size, rooms, age and location, it estimates the price it would sell for. It is built to work for homes that are not on the market, so it never uses a list price or anything else that only exists once a home is listed.
 
-## Overview
+Built during the IDX Exchange data science internship (Weeks 1–10), on CRMLS sold-property data from January 2024 to April 2026.
 
-The objective of this project is to develop a reproducible machine learning pipeline capable of estimating the closing price of a California single-family property using characteristics available at prediction time.
+**Final model:** XGBoost on ten inputs: living area, lot size, bedrooms, bathrooms, age at sale, latitude, longitude, city, ZIP code and school district. On April 2026, the held-out test month, it prices the typical home within **7.7%** of its sale price, against 16.5% for the Week 4 linear-regression baseline.
 
-The model is intended to support predictions for both listed and off-market properties. Accordingly, model inputs are restricted to property characteristics that can reasonably be known independently of an active listing.
+## Data and the trained model are not included
 
-The current dataset contains **27 months of CRMLS sold-property data from January 2024 through March 2026**.
+The CRMLS data is licensed through IDX Exchange and cannot be redistributed, so this repository contains **no raw or cleaned data and no trained model**. The same applies to anything derived from individual sales: per-sale predictions, the school-district lookup cache, and the app's model file and ZIP/error lookup tables. All of these are git-ignored and rebuilt locally from the raw files.
 
-## Data
+The repository does include code, notebooks with their outputs, aggregate metric tables in `results/`, the app's metadata, and a simplified copy of the public school-district boundaries.
 
-Monthly CRMLS datasets are combined and restricted to:
+## Quick start
 
-- `PropertyType == "Residential"`
-- `PropertySubType == "SingleFamilyResidence"`
+1. **Set up Python 3.14.7** in a virtual environment and install the pinned packages:
 
-This produces **297,245 single-family residential transactions** prior to preprocessing.
+   ```bash
+   python -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   brew install libomp   # macOS only: LightGBM and XGBoost need the OpenMP runtime
+   ```
 
-Raw CRMLS data is proprietary and is **not included in this repository**.
+2. **Get the CRMLS files.** IDX Exchange provides them over FTP. Ask IDX for access, then download the 28 monthly files from `raw/California` whose names start with `CRMLSSold`, January 2024 (`CRMLSSold202401_filled.csv`) through April 2026 (`CRMLSSold202604.csv`). Put them unchanged in `data/raw/`. Some months are named `..._filled.csv`; keep the names as they are.
 
-### Initial Modeling Features
+   `scripts/crmls_sold.py` can instead pull a month from the Trestle API through IDX's token proxy. It reads the proxy key from `IDX_TOKEN_KEY`, either set in the environment or in a `.env` file (copy `.env.example`; `.env` is git-ignored). Ask IDX for the key.
 
-The current baseline feature set includes:
+3. **Get the school-district boundaries** (public, from data.ca.gov):
 
-**Numeric**
-- `LivingArea`
-- `BedroomsTotal`
-- `BathroomsTotalInteger`
-- `LotSizeSquareFeet`
+   ```bash
+   mkdir -p data/external/school_districts_2024_25 && cd data/external/school_districts_2024_25
+   curl -L -o school_districts_2024_25.zip \
+     "https://gis.data.ca.gov/api/download/v1/items/b0e3b936426a47ce9d9a2e77e2bb86cc/shapefile?layers=0"
+   unzip school_districts_2024_25.zip && cd -
+   ```
 
-**Geographic**
-- `City`
-- `PostalCode`
+4. **Build the model and the app files:**
 
-This feature set is intentionally limited for the initial modeling pipeline. Additional property, temporal, and geographic features will be evaluated during feature engineering.
+   ```bash
+   python -m src.train
+   ```
 
-### Leakage Prevention
+   This cleans the data, joins school districts, refits the frozen final model on every month through April 2026, and writes everything the app needs to `models/app/`. It checks the data fingerprint first: with exactly the files above it is `66cab54017ab`. The run takes under a minute; the model file is 4.3 MB.
 
-Because the model must also value properties that are not currently listed, listing-dependent variables are excluded from model inputs, including:
+5. **Launch the app:**
 
-- `ListPrice`
-- `OriginalListPrice`
-- `DaysOnMarket` and cumulative DOM fields
-- `PurchaseContractDate`
-- `ListingContractDate`
-- Features derived from listing price or contract timing
+   ```bash
+   streamlit run app.py
+   ```
 
-`ClosePrice` is used exclusively as the prediction target.
+## Other entry points
 
-## Exploratory Data Analysis
+All are run from the repository root and work without the notebooks.
 
-Exploratory analysis was performed before applying cleaning or imputation rules.
+| Command | What it does |
+|---|---|
+| `python -m src.preprocess` | Cleans the raw files, joins school districts, prints rows removed per step, writes `data/processed/sales_clean.csv` |
+| `python -m src.train` | Builds the deployed model and the app lookups in `models/app/` |
+| `python -m src.evaluate [--month YYYYMM]` | Trains the final configuration on all months before `--month` and scores that month. With the default (April 2026) it reproduces the test and checks it against `results/metrics_summary.csv` |
+| `python -m src.predict --zip 92253 --city "La Quinta" --living-area 1800 --lot-size 6500 --beds 3 --baths 2 --year-built 1985` | Estimates one home; `--csv homes.csv --out estimates.csv` does many (columns listed in `src/predict.py`) |
 
-Key findings include:
+## The app
 
-- `ClosePrice` is strongly right-skewed and contains a small number of extreme observations.
-- Missingness is relatively low among the initial numeric features, with `LotSizeSquareFeet` having the highest missingness at approximately 1.7%.
-- `LivingArea` has a clear positive relationship with sale price, although substantial variation remains among similarly sized properties.
-- Lot size has a weaker standalone relationship with sale price.
-- Geographic location is strongly associated with property value.
-- Among the 15 highest-volume cities, median sale prices range from approximately **$440,000 in Victorville to $1.67 million in San Jose**.
-- Monthly median prices vary over time, supporting chronological rather than random model evaluation.
-- Initial data-quality issues included zero values, extreme observations, exact duplicates, and repeated `ListingKey` values.
+Three pages:
 
-See [`notebooks/01_exploration.ipynb`](notebooks/01_exploration.ipynb) for the complete analysis.
+- **Estimate.** Enter a home and get an estimate, with a typical-error range taken from the April test for similarly priced homes. Warnings appear for unusual inputs, coordinates outside California, ZIPs with few sales, and estimates near the model's price ceiling.
+- **Model comparison.** The April scoreboard and month-by-month error for every model.
+- **How it works.** The data, the leakage rules, the evaluation and the limitations, in plain language.
 
-## Preprocessing
+![Estimate page](docs/screenshots/app_estimate.png)
 
-Preprocessing is designed to create a reproducible modeling dataset while minimizing data leakage.
+![Model comparison page](docs/screenshots/app_model_comparison.png)
 
-### Duplicate Handling
+![How it works page](docs/screenshots/app_how_it_works.png)
 
-The initial dataset contained **29 exact duplicate rows**.
+The app's model is the frozen final configuration refit on all months through April 2026, after the April test was done. **Its accuracy figures come from the April test of the same configuration trained through March.** The refit has no later month to be scored on.
 
-Repeated `ListingKey` values were investigated separately rather than automatically removed. Some repeated keys correspond to records with different close dates or close prices and therefore may represent distinct transactions, relistings, or MLS updates.
-
-The preprocessing procedure therefore:
-
-- Removes exact duplicate rows.
-- Does not remove observations solely because `ListingKey` repeats.
-- Verifies transaction-level duplication using `ListingKey`, `CloseDate`, and `ClosePrice`.
-
-After exact duplicate removal, no duplicate combinations of these three fields remained.
-
-### Target Cleaning
-
-Because `ClosePrice` is the prediction target, missing target values are not imputed.
-
-Records are removed when:
-
-- `ClosePrice` is missing.
-- `ClosePrice <= 0`.
-- `ClosePrice > $100,000,000`.
-
-The upper bound was selected conservatively after inspecting the extreme tail of the distribution. It removes a very small number of highly implausible observations while retaining legitimate luxury-market transactions.
-
-After duplicate and target-quality cleaning, **297,193 observations remain**.
-
-### Predictor Cleaning
-
-Zero values in key physical-property fields are treated as missing where they do not represent meaningful measurements:
-
-- `LivingArea`
-- `BedroomsTotal`
-- `BathroomsTotalInteger`
-- `LotSizeSquareFeet`
-
-Rather than dropping an entire transaction because a predictor is unavailable, missing predictor values are handled during the preprocessing pipeline.
-
-### Temporal Train/Test Split
-
-Model evaluation uses a chronological split to better approximate prediction on future transactions.
-
-The project specification reserves the most recent available month as the test set:
-
-| Split | Period | Observations |
-| --- | --- | ---: |
-| Training | Jan 2024 – Feb 2026 | 285,632 |
-| Test | Mar 2026 | 11,561 |
-
-March 2026 is kept completely outside the training dataset.
-
-The number of preceding months used for model training will be treated as a tunable modeling decision rather than assuming that the full historical window is necessarily optimal.
-
-### Training-Only Transformations
-
-Data-dependent transformations are fit using the training set only to prevent information from the held-out test period from leaking into model development.
-
-The initial preprocessing pipeline includes:
-
-- Median imputation for numeric variables
-- Standardization of numeric variables
-- Categorical missing-value imputation
-- One-hot encoding of categorical variables
-- Handling of previously unseen test-set categories
-
-The pipeline is implemented using scikit-learn preprocessing components so the same fitted transformations can be consistently applied during training and inference.
-
-See [`notebooks/02_preprocessing.ipynb`](notebooks/02_preprocessing.ipynb) for the preprocessing workflow.
-
-## Baseline Model (Week 4)
-
-[`notebooks/03_baseline_model.ipynb`](notebooks/03_baseline_model.ipynb) cleans the raw files from scratch and fits a Linear Regression on the six features above.
-
-### Evaluation Design
-
-Following the IDX AVM best-practices standard:
-
-- Each sale is assigned to its month by `CloseDate`. Models train on all prior months, are validated on **February 2026**, and are tested once on **March 2026**.
-- The same pipeline is re-run at three earlier cutoffs (November 2025 – January 2026) to check that results are stable over time.
-- The 0.5th / 99.5th percentile `ClosePrice` bounds are computed from each training period only and then applied unchanged to the evaluation month. Metrics are reported both within those bounds and for all valid sales.
-- Imputation, scaling, and encoding are fit inside a scikit-learn `Pipeline` on training data only.
-
-Cleaning in notebook 03 adds a few rules on top of notebook 02:
-
-- Records with `CloseDate` before `ListingContractDate` are removed (41 rows). The listing date is used only for this check, never as a model input.
-- Physical values outside plausible bounds (living area 300–30,000 sq ft, 1–20 bedrooms or bathrooms) are treated as missing.
-- Missing-value indicator columns are added for the numeric features.
-
-### Results
-
-A log-log variant (log price regressed on log living area and log lot size) is reported alongside the required baseline as a stronger linear reference point.
-
-March 2026 test results, for sales within the training-derived price bounds (98.8% of March sales):
-
-| Model | R² | MdAPE | MAPE | MAE |
-| --- | ---: | ---: | ---: | ---: |
-| Linear Regression (baseline) | **0.812** | 16.6% | 22.6% | $238,462 |
-| Log-log Linear Regression | 0.826 | 10.0% | 14.1% | $186,273 |
-
-- Baseline R² stayed between 0.80 and 0.81 at every historical cutoff.
-- Training on all available months outperformed 3-, 6-, 12-, and 18-month windows.
-- Error is largest for homes under about $560K (29.6% MdAPE) and in Inland Empire and high-desert cities.
-- Including the ~1.2% of sales outside the price bounds lowers baseline R² to 0.63, while MdAPE barely changes.
-
-## Repository Structure
+## Repository layout
 
 ```text
-IDX-Exchange-Data-Science/
-├── notebooks/
-│   ├── 01_exploration.ipynb
-│   ├── 02_preprocessing.ipynb
-│   └── 03_baseline_model.ipynb
-├── scripts/
-│   └── crmls_sold.py
-├── results/              # metrics and data snapshot (local; CSVs are git-ignored)
-├── requirements.txt
-├── .gitignore
-└── README.md
+app.py                     Streamlit app
+src/
+  avm.py                   Loading, cleaning, features, models, splits, metrics (shared by everything)
+  config.py                Paths and fixed reference values
+  preprocess.py            python -m src.preprocess
+  train.py                 python -m src.train
+  evaluate.py              python -m src.evaluate
+  predict.py               python -m src.predict (the app uses the same input preparation)
+notebooks/
+  01_exploration.ipynb         Week 2: distributions, missingness, price by city and month
+  02_preprocessing.ipynb       Week 3: duplicates, target cleaning, first train/test split
+  03_baseline_model.ipynb      Week 4: linear regression baseline and log-log variant
+  04_model_comparison.ipynb    Week 5: decision tree and random forest
+  05_feature_engineering.ipynb Week 6: engineered features, school districts, ablation
+  06_advanced_models.ipynb     Week 7: LightGBM and XGBoost, tuning, final model choice
+  07_evaluation.ipynb          Week 8: April 2026 test, error breakdowns, presentation summary
+results/                   Aggregate metrics, tuning grids, bootstrap intervals, final config
+models/app/                App metadata and boundaries (model and lookups are local only)
+docs/screenshots/          App screenshots
+scripts/crmls_sold.py      Optional download from the Trestle API
+data/                      Local only: raw/, processed/, external/
 ```
 
-Local raw and processed datasets are excluded from version control.
+## Method
 
-## Project Status
+### Cleaning
 
-| Stage | Status |
-| --- | --- |
-| Data access and integration | Complete |
-| Exploratory data analysis | Complete |
-| Data-quality investigation | Complete |
-| Duplicate and target cleaning | Complete |
-| Chronological train/test split | Complete |
-| Preprocessing pipeline | Complete |
-| Linear Regression baseline | Complete |
-| Decision Tree / Random Forest comparison | Not started |
-| Feature engineering | Not started |
-| Advanced models | Not started |
-| Expanded evaluation | Not started |
+Only `PropertyType == "Residential"` and `PropertySubType == "SingleFamilyResidence"`. Rows are removed for:
 
-## Roadmap
+- exact duplicates;
+- a missing close date;
+- a missing, zero or negative `ClosePrice`, or one above $100M (data-entry errors);
+- a close date before the listing date (the listing date is used only for this check).
 
-The project follows a 12-week development plan:
+From Week 6 on, a later record of the same `ListingKey` is also removed when it closes within 30 days of an earlier one at a price within 2%. These are one sale reported twice. The rule removes 139 sales, including 4 in April.
 
-1. **Setup and data access** — Complete
-2. **Exploratory data analysis** — Complete
-3. **Data preprocessing** — Complete
-4. **Linear Regression baseline** — Complete
-5. **Decision Tree and Random Forest comparison**
-6. **Feature engineering and school-district geographic features**
-7. **Gradient boosting and hyperparameter tuning**
-8. **Expanded evaluation using R², MAPE, and MdAPE**
-9. **Optional prediction application**
-10. **Documentation**
-11. **Presentation preparation**
-12. **Final presentation and project handoff**
+Implausible values are set to missing, not dropped:
 
-## Reproducing
+- living area outside 300–30,000 sq ft, or 1–20 bedrooms or bathrooms;
+- year built before 1850 or after the sale year;
+- coordinates outside a box around California.
+
+After cleaning there are 309,039 sales, January 2024 – April 2026.
+
+Notebooks 03 and 04 keep the Week 4 rules without the re-reported-sale rule, so their frozen results still reproduce. Notebooks 01–03 read only the files through March 2026; notebook 04 fingerprints April's file but drops its sales right after cleaning.
+
+### Features
+
+- **Dataset A (Weeks 4–5):** living area, lot size, bedrooms, bathrooms, city, ZIP.
+- **Dataset B without ratios (Weeks 6–7, final):** adds age at sale, latitude, longitude, and school district.
+- **School district:** a spatial join against the CA School District Areas 2024-25 boundaries. A home gets its unified district, or else its elementary + high school district pair. 99.99% of sales with usable coordinates match a district.
+- **Ratios:** three ratio features (bed/bath, living area per bedroom, lot to living area) were tested in Week 6. They added nothing and were dropped.
+
+All preprocessing sits inside scikit-learn pipelines fitted on training data only:
+- engineered features are computed row by row;
+- numerics get median imputation plus missing-value indicators;
+- city, ZIP and district are target-encoded with 5-fold cross-fitting, so no row's encoding uses its own price.
+
+The log-log linear model uses one-hot encoding instead.
+
+### Leakage rules
+
+Never used as inputs:
+- `ListPrice` and `OriginalListPrice`;
+- days on market and cumulative days on market;
+- price reductions;
+- listing, purchase-contract, status-change and close dates;
+- `TaxAnnualAmount` and other tax fields (a sale can reset the assessment).
+
+Agent and office fields are not used. Neither are the agent-entered school fields; the spatial join replaces them. `avm.FeatureSet` refuses any excluded column.
+
+### Evaluation protocol
+
+- **Chronological splits only.** Each model trains on every month before the one it is scored on.
+- **Price bounds.** The 0.5th and 99.5th percentile price bounds come from the training months alone. The model trains only on sales inside them. Scores are reported for sales inside the same frozen bounds ("filtered", about 99% of a month) and for all sales.
+- **Weeks 4–5:** validation on February 2026, test on March 2026.
+- **Week 6 on, matching the rest of the team:**
+  - backtests at December 2025, January 2026 and February 2026;
+  - validation on March 2026;
+  - **April 2026 as the shared test month**, scored once in notebook 07 after the model was locked in commit `8d41984`.
+- **Comparisons.** Model comparisons use paired bootstrap intervals for the MdAPE difference (1,000 resamples, seed 42).
+
+## Results: April 2026 test
+
+Every model frozen before April, trained on all 294,072 sales through March 2026 that fall inside the price bounds, and scored once. "Filtered" is the 11,890 April sales (98.9%) inside the training price range of $190,000–$8,300,000.
+
+| Model | Features | MdAPE | Within 10% | Within 20% | R² | MAE |
+|---|---|---:|---:|---:|---:|---:|
+| Linear regression (Week 4 baseline) | A | 16.46% | 32.3% | 58.5% | 0.817 | $247,747 |
+| Log-log linear regression | A | 10.22% | 49.0% | 78.6% | 0.839 | $194,997 |
+| Decision tree | A | 10.35% | 48.9% | 76.2% | 0.834 | $203,108 |
+| Random forest | A | 9.16% | 53.3% | 80.0% | 0.862 | $182,676 |
+| Random forest | B without ratios | 7.82% | 59.8% | 84.3% | 0.887 | $160,711 |
+| LightGBM | B without ratios | 7.65% | 60.6% | 85.5% | 0.902 | $151,944 |
+| **XGBoost (final)** | B without ratios | **7.70%** | 60.4% | 85.5% | 0.898 | $153,502 |
+
+On all 12,022 April sales, XGBoost's MdAPE is 7.83% and its R² 0.620. Every model, every month and both scopes are in `results/metrics_summary.csv`.
+
+## Key findings
+
+- **Location detail mattered most.** The same random forest went from 9.2% to 7.8% MdAPE on April when it got coordinates, age and school district. Coordinates alone accounted for most of that.
+- **Boosting matched the forest at a fraction of the size.**
+  - LightGBM and XGBoost beat the forest by 0.2–0.4 points in the backtests.
+  - On March and April the difference was within resampling noise.
+  - The saved model fell from 268 MB to 4 MB.
+- **Why XGBoost over LightGBM.** The two were indistinguishable at every cutoff. The rule fixed before tuning said to prefer the smaller model within 0.1 points, which is XGBoost. LightGBM was 0.05 points lower on April, but switching after seeing the test would have made April a selection set.
+- **Stable over time.** The final model's MdAPE stayed between 7.57% and 7.90% from December 2025 to April 2026.
+
+## Limitations
+
+- **The top of the market.** A tree model cannot predict above the highest price it was trained on: $8.30M for the tested model, $8.40M for the app model. The top 1% of April sales ($6.62M and up) were under-predicted by a median of 38%, and 80 of those 121 homes sold above the training maximum.
+- **Older homes and some markets.**
+  - Error rises with age, from 5.3% for homes up to 10 years old to 10.8% for homes over 75 years old.
+  - Error is highest in the Bay Area: Alameda 10.3%, and Oakland at 16.2%, the worst city.
+- **No time trend.** In a rising market the estimates lag: the median April error was −1.85%.
+- **Condition is unknown.** Renovations, views, pools and condition are not inputs.
+- **Location without coordinates.** The app and `src.predict` fall back to the ZIP's median sale location, so the district and fine location can be off.
+
+## Next steps
+
+- Add a time feature (months since the start of the data) or weight recent sales more, to remove the lag.
+- Add detail for expensive homes, such as view or waterfront flags or lot size relative to the neighborhood, after a leakage review.
+- When May 2026 arrives, rerun notebook 07 with May as the test month, then rerun `python -m src.train`.
+
+## Reproducing the notebooks
+
+Run them in order, from the `notebooks/` folder, with the data set up as in the quick start. Restart & Run All, or headless:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+cd notebooks
+jupyter nbconvert --to notebook --execute --inplace 01_exploration.ipynb   # and so on, 01 to 07
 ```
 
-Place the `CRMLSSold*.csv` files in `data/raw/` and run the notebooks in order. Notebook 03 prints a fingerprint of the source files (`2ff3877a04bd` for the January 2024 – March 2026 pull) and saves per-file hashes to `results/data_snapshot.csv` and all metrics to `results/baseline_metrics.csv`.
+Expensive steps are cached in `results/` (and in `data/processed/` for anything containing sales records). Each cache rebuilds automatically when it is missing or stale, or when its flag is set to `True`:
 
-## Next Steps
+| Notebook | Flags |
+|---|---|
+| 04 | `RETUNE`, `RERUN_BACKTESTS`, `RUN_FINAL_TEST` (scores March, the Week 5 test) |
+| 05 | `RERUN_DISTRICTS`, `RERUN_EXPERIMENTS` |
+| 06 | `RETUNE`, `RERUN_COMPARISON` |
+| 07 | `RERUN_BACKTESTS` |
 
-Week 5 compares **Decision Tree and Random Forest** regressors against both linear baselines. Model selection will use February 2026 and the earlier cutoffs; the March 2026 test month is not used for those decisions.
+Notebook 07 scores April only if `results/april_predictions.csv` does not exist. Otherwise it loads the saved test, and it refuses to rescore April with different settings.
+
+Reproducibility checks built into the notebooks and scripts:
+
+- **Data fingerprint.** `66cab54017ab` for all 28 files. The 27 files through March must still match the Week 4 snapshot, `2ff3877a04bd`.
+- **Seeds.** `random_state=42` everywhere.
+- **Pinned packages** in `requirements.txt`.
+- **Reproduction asserts.** Each notebook asserts that models it shares with an earlier notebook reproduce that notebook's numbers.
+
+The IDX AVM best-practices standard and the internship plan define the scope. The documents are with IDX Exchange.
