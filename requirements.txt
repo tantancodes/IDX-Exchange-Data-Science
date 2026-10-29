@@ -12,3 +12,6 @@ geopandas==1.2.0
 shapely==2.2.0
 pyogrio==0.13.0
 pyproj==3.8.0
+# LightGBM and XGBoost need the OpenMP runtime on macOS: brew install libomp
+lightgbm==4.7.0
+xgboost==3.4.1

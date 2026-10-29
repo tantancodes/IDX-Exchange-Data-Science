@@ -57,6 +57,10 @@ PLAUSIBLE = {"LivingArea": (300, 30_000),
              "BedroomsTotal": (1, 20),
              "BathroomsTotalInteger": (1, 20)}
 EARLIEST_YEAR_BUILT = 1850
+# A later record of the same listing that closes within this window at nearly
+# the same price is the same sale reported again (Week 6 rule, off by default).
+REREPORT_DAYS = 30
+REREPORT_PRICE_SHARE = 0.02
 # Generous box around California; coordinates outside it are typos or
 # out-of-state listings and are set to missing.
 CA_LATITUDE = (32.5, 42.1)
@@ -121,11 +125,39 @@ def clean_text(series: pd.Series, width: int | None = None) -> pd.Series:
     return pd.Series(s.astype(object).where(s.notna(), np.nan), index=series.index)
 
 
-def clean(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
+def find_rereported_sales(df: pd.DataFrame) -> pd.Index:
+    """Index of records that repeat an earlier sale of the same listing.
+
+    A record is a repeat when an earlier kept record has the same ListingKey,
+    closed at most REREPORT_DAYS before it, and has a price within
+    REREPORT_PRICE_SHARE of it. Each record is compared with the last kept one,
+    so a chain of three copies keeps only the first.
+    """
+    repeated = df.loc[df["ListingKey"].duplicated(keep=False)]
+    repeated = repeated.sort_values(["ListingKey", "CloseDate"], kind="stable")
+    drop = []
+    for _, group in repeated.groupby("ListingKey", sort=False):
+        kept_date = kept_price = None
+        for index, date, price in zip(group.index, group["CloseDate"], group[TARGET]):
+            if (kept_date is not None and (date - kept_date).days <= REREPORT_DAYS
+                    and abs(price - kept_price) <= REREPORT_PRICE_SHARE * kept_price):
+                drop.append(index)
+            else:
+                kept_date, kept_price = date, price
+    return pd.Index(drop)
+
+
+def clean(raw: pd.DataFrame, drop_rereported: bool = False
+          ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
     """Apply the fixed Week 4 validity rules.
 
     Returns the cleaned sales, a table of rows removed at each step, and the
     number of physical values set to missing per column.
+
+    ``drop_rereported`` (Week 6 on) also drops later copies of a re-reported
+    sale; see ``find_rereported_sales``. It is off by default so notebooks 03
+    and 04 reproduce their frozen results. The dropped rows are kept in
+    ``steps.attrs["rereported"]`` for logging.
     """
     steps = []
 
@@ -163,6 +195,14 @@ def clean(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]
         listed = pd.to_datetime(df["ListingContractDate"], errors="coerce")
         df = df.loc[~(df["CloseDate"] < listed)].copy()
         log_step("CloseDate before listing date", previous, len(df))
+    previous = len(df)
+
+    rereported = df.iloc[:0]
+    if drop_rereported:
+        rereported = df.loc[find_rereported_sales(df)]
+        df = df.drop(rereported.index)
+        log_step(f"Re-reported sale (same listing, within {REREPORT_DAYS} days "
+                 f"and {REREPORT_PRICE_SHARE:.0%} of an earlier close)", previous, len(df))
 
     set_missing = {}
     for col in NUMERIC:
@@ -192,7 +232,10 @@ def clean(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]
     df["City"] = clean_text(df["City"])
     df["PostalCode"] = clean_text(df["PostalCode"], width=5)
     df["CloseMonth"] = df["CloseDate"].dt.strftime("%Y%m")
-    return df, pd.DataFrame(steps), set_missing
+    steps = pd.DataFrame(steps)
+    steps.attrs["rereported"] = rereported[["ListingKey", "CloseDate", TARGET]].assign(
+        CloseMonth=rereported["CloseDate"].dt.strftime("%Y%m"))
+    return df, steps, set_missing
 
 
 # --------------------------------------------------------------------------
@@ -250,6 +293,9 @@ FEATURE_GROUPS = {
 }
 BASE_FEATURES = FeatureSet("A", tuple(NUMERIC), tuple(CATEGORICAL))
 EXTENDED_FEATURES = BASE_FEATURES.plus("B", *FEATURE_GROUPS)
+# Dataset B without the three ratios, which added nothing in the Week 6 ablation.
+FEATURES_WITHOUT_RATIOS = BASE_FEATURES.plus("B without ratios", "age", "coordinates",
+                                             "school district")
 
 
 def add_engineered_features(x: pd.DataFrame) -> pd.DataFrame:
@@ -340,6 +386,44 @@ def assign_school_districts(latitude: pd.Series, longitude: pd.Series,
                          "SchoolDistrictType": kind})
 
 
+DISTRICT_LOCATION = ["ListingKey", "Latitude", "Longitude"]
+
+
+def attach_school_districts(df: pd.DataFrame, cache_path: Path,
+                            shapefile: Path | None = None) -> tuple[pd.DataFrame, int]:
+    """Add school-district columns to cleaned sales, using a per-location cache.
+
+    The cache holds one row per listing location (ListingKey plus coordinates,
+    since some keys appear at more than one location). Locations missing from
+    it are joined against ``shapefile`` and appended, so adding a month only
+    joins its new listings. Returns the merged sales and the number of
+    locations newly joined.
+    """
+    cache_path = Path(cache_path)
+    locations = df[DISTRICT_LOCATION].drop_duplicates()
+    if cache_path.exists():
+        cache = pd.read_csv(cache_path, dtype={"SchoolDistrict": str})
+        new = locations.merge(cache[DISTRICT_LOCATION], how="left", indicator=True)
+        new = new.loc[new.pop("_merge") == "left_only"]
+    else:
+        cache, new = None, locations
+    new = new.reset_index(drop=True)
+    if len(new):
+        if shapefile is None:
+            raise FileNotFoundError(f"{len(new)} locations are not in {cache_path}; pass the shapefile")
+        labels = assign_school_districts(new["Latitude"], new["Longitude"],
+                                         load_school_districts(shapefile))
+        joined = pd.concat([new, labels], axis=1)
+        cache = joined if cache is None else pd.concat([cache, joined], ignore_index=True)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache.to_csv(cache_path, index=False)
+        cache = pd.read_csv(cache_path, dtype={"SchoolDistrict": str})
+    merged = df.merge(cache, on=DISTRICT_LOCATION, how="left", validate="many_to_one",
+                      indicator=True)
+    assert (merged.pop("_merge") == "both").all() and len(merged) == len(df)
+    return merged, len(new)
+
+
 # --------------------------------------------------------------------------
 # Models
 # --------------------------------------------------------------------------
@@ -424,12 +508,32 @@ TREE_ESTIMATORS = {
     "Decision tree": DecisionTreeRegressor(random_state=RANDOM_STATE),
     "Random forest": RandomForestRegressor(random_state=RANDOM_STATE, n_jobs=-1),
 }
+LIGHTGBM, XGBOOST = "LightGBM", "XGBoost"
+
+
+def new_estimator(kind: str) -> RegressorMixin:
+    """Unfitted, seeded estimator for a model name.
+
+    LightGBM and XGBoost are imported only when asked for, so notebooks that
+    never use them (03–05) do not need the libraries or their OpenMP runtime.
+    """
+    if kind in TREE_ESTIMATORS:
+        return clone(TREE_ESTIMATORS[kind])
+    if kind == LIGHTGBM:
+        from lightgbm import LGBMRegressor
+        # deterministic + row-wise histograms make repeated fits give identical trees.
+        return LGBMRegressor(random_state=RANDOM_STATE, n_jobs=-1, verbose=-1,
+                             deterministic=True, force_row_wise=True)
+    if kind == XGBOOST:
+        from xgboost import XGBRegressor
+        return XGBRegressor(random_state=RANDOM_STATE, n_jobs=-1, tree_method="hist")
+    raise KeyError(kind)
 
 
 def tree_factory(kind: str, params: dict, log_target: bool,
                  features: FeatureSet = BASE_FEATURES) -> ModelFactory:
-    """Factory for a seeded decision tree or random forest with ``params``."""
-    estimator = clone(TREE_ESTIMATORS[kind]).set_params(**params)
+    """Factory for a seeded tree ensemble (or single tree) with ``params``."""
+    estimator = new_estimator(kind).set_params(**params)
     # Clone on every call so a kept fitted model is never refit by a later cutoff.
     return lambda: make_tree_model(clone(estimator), log_target, features)
 
@@ -441,22 +545,24 @@ def describe_config(params: dict, log_target: bool) -> str:
 
 
 def run_grid(data: pd.DataFrame, eval_month: str, kind: str,
-             grid: dict[str, list], score_train: bool = False) -> pd.DataFrame:
-    """Fit every grid point (raw and log target) on one cutoff.
+             grid: dict[str, list], score_train: bool = False,
+             log_targets: tuple[bool, ...] = (False, True),
+             features: FeatureSet = BASE_FEATURES) -> pd.DataFrame:
+    """Fit every grid point (for each target in ``log_targets``) on one cutoff.
 
     Returns one row per configuration with its parameters, fit time, and
     filtered-scope metrics (plus training MdAPE and R² when ``score_train``).
     """
     configs = {}
-    for log_target in (False, True):
+    for log_target in log_targets:
         for values in itertools.product(*grid.values()):
             params = dict(zip(grid, values))
             configs[describe_config(params, log_target)] = (params, log_target)
 
     run = run_cutoff(data, eval_month,
-                     {label: tree_factory(kind, params, log_target)
+                     {label: tree_factory(kind, params, log_target, features)
                       for label, (params, log_target) in configs.items()},
-                     score_train=score_train)
+                     score_train=score_train, inputs=features)
     rows = []
     for label, (params, log_target) in configs.items():
         res = run["results"][label]
@@ -653,9 +759,26 @@ def format_table(table: pd.DataFrame, pct_decimals: int = 1) -> pd.DataFrame:
 LINEAR, LOG_LINEAR = "Linear regression", "Log-log linear regression"
 TREE, FOREST = "Decision tree", "Random forest"
 MODEL_ORDER = [LINEAR, LOG_LINEAR, TREE, FOREST]
-MODEL_COLORS = {LINEAR: "#9a9a9a", LOG_LINEAR: "#3b6ea8", TREE: "#e08a2e", FOREST: "#1f7a45"}
+MODEL_COLORS = {LINEAR: "#9a9a9a", LOG_LINEAR: "#3b6ea8", TREE: "#e08a2e", FOREST: "#1f7a45",
+                LIGHTGBM: "#7b3fa0", XGBOOST: "#c0392b"}
 DISPLAY_NAMES = {LINEAR: "Linear regression (baseline)", LOG_LINEAR: "Log-log linear regression",
-                 TREE: "Decision tree", FOREST: "Random forest"}
+                 TREE: "Decision tree", FOREST: "Random forest",
+                 LIGHTGBM: "LightGBM", XGBOOST: "XGBoost"}
+
+
+def saved_size(model, compress: int = 3) -> dict[str, float]:
+    """Size and load time of ``model`` saved with joblib, as the app will save it."""
+    import io
+
+    import joblib
+
+    buffer = io.BytesIO()
+    joblib.dump(model, buffer, compress=compress)
+    size_mb = buffer.tell() / 1e6
+    buffer.seek(0)
+    start = time.perf_counter()
+    joblib.load(buffer)
+    return {"size_mb": size_mb, "load_seconds": time.perf_counter() - start}
 
 
 def assert_metrics_match(run: dict, saved: pd.DataFrame) -> None:
