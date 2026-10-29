@@ -1,0 +1,19 @@
+{
+  "feature_set": "B without ratios",
+  "numeric": [
+    "LivingArea",
+    "LotSizeSquareFeet",
+    "BedroomsTotal",
+    "BathroomsTotalInteger",
+    "AgeAtSale",
+    "Latitude",
+    "Longitude"
+  ],
+  "categorical": [
+    "City",
+    "PostalCode",
+    "SchoolDistrict"
+  ],
+  "rule": "B without ratios if its March MdAPE is within 0.1 pt of B",
+  "march_difference_pts": -0.0787
+}
