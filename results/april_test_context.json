@@ -1,0 +1,18 @@
+{
+  "lock_commit": "8d41984",
+  "data_snapshot": "66cab54017ab",
+  "test_month": "202604",
+  "train_months": [
+    "202401",
+    "202603"
+  ],
+  "n_train": 294072,
+  "price_bounds": [
+    190000.0,
+    8300000.0
+  ],
+  "train_price_max": 8300000.0,
+  "coverage": 0.9890201297621029,
+  "n_test_all": 12022,
+  "n_test_filtered": 11890
+}
