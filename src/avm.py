@@ -12,6 +12,7 @@ import hashlib
 import itertools
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -35,9 +36,15 @@ NUMERIC = SKEWED + COUNTS
 CATEGORICAL = ["City", "PostalCode"]
 FEATURES = NUMERIC + CATEGORICAL
 LOW_Q, HIGH_Q = 0.005, 0.995
+# Week 4–5 split, kept so notebooks 03–04 reproduce.
 VAL_MONTH = "202602"
 TEST_MONTH = "202603"
 BACKTEST_MONTHS = ["202511", "202512", "202601"]
+# Team split from Week 6 on: March (the Week 5 test month) becomes validation and
+# April 2026 is the shared test month, scored once at the end.
+TEAM_VAL_MONTH = "202603"
+TEAM_TEST_MONTH = "202604"
+TEAM_BACKTEST_MONTHS = ["202512", "202601", "202602"]
 RANDOM_STATE = 42
 
 # Prices above $100M on ordinary homes are data-entry errors
@@ -49,11 +56,18 @@ MAX_PRICE = 100_000_000
 PLAUSIBLE = {"LivingArea": (300, 30_000),
              "BedroomsTotal": (1, 20),
              "BathroomsTotalInteger": (1, 20)}
+EARLIEST_YEAR_BUILT = 1850
+# Generous box around California; coordinates outside it are typos or
+# out-of-state listings and are set to missing.
+CA_LATITUDE = (32.5, 42.1)
+CA_LONGITUDE = (-124.5, -114.1)
 
-# Listing-dependent and post-sale fields are never model inputs.
+# Listing-dependent, post-sale, and tax fields are never model inputs. Tax
+# amounts can be reassessed after a sale, so they may encode the price.
 EXCLUDED = {"ListPrice", "OriginalListPrice", "DaysOnMarket",
             "CumulativeDaysOnMarket", "PurchaseContractDate",
-            "ListingContractDate", "CloseDate", "ClosePrice"}
+            "ListingContractDate", "ContractStatusChangeDate", "CloseDate",
+            "ClosePrice", "TaxAnnualAmount", "TaxYear", "TaxAssessedValue"}
 assert not EXCLUDED.intersection(FEATURES)
 
 ModelFactory = Callable[[], RegressorMixin]
@@ -85,8 +99,16 @@ def load_raw(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, str]:
          "sha256": hashlib.sha256(f.read_bytes()).hexdigest()[:12]}
         for f in files
     ])
-    fingerprint = hashlib.sha256("".join(snapshot["sha256"]).encode()).hexdigest()[:12]
-    return raw, snapshot, fingerprint
+    return raw, snapshot, snapshot_fingerprint(snapshot)
+
+
+def snapshot_fingerprint(snapshot: pd.DataFrame) -> str:
+    """12-character fingerprint of the files listed in a snapshot table.
+
+    Passing a subset of rows fingerprints just those files, which lets a
+    notebook confirm the months it uses are unchanged after a new month lands.
+    """
+    return hashlib.sha256("".join(snapshot["sha256"]).encode()).hexdigest()[:12]
 
 
 def clean_text(series: pd.Series, width: int | None = None) -> pd.Series:
@@ -153,20 +175,169 @@ def clean(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]
         set_missing[col] = int(invalid.sum())
         df.loc[invalid, col] = np.nan
 
+    # Week 6 fields. These only add columns, so the Week 4–5 inputs are unchanged.
+    df["SaleYear"] = df["CloseDate"].dt.year.astype("float64")
+    df["YearBuilt"] = pd.to_numeric(df["YearBuilt"], errors="coerce")
+    invalid = df["YearBuilt"].notna() & ~df["YearBuilt"].between(EARLIEST_YEAR_BUILT, df["SaleYear"])
+    set_missing["YearBuilt"] = int(invalid.sum())
+    df.loc[invalid, "YearBuilt"] = np.nan
+
+    for col in ("Latitude", "Longitude"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    inside = df["Latitude"].between(*CA_LATITUDE) & df["Longitude"].between(*CA_LONGITUDE)
+    invalid = df[["Latitude", "Longitude"]].notna().any(axis=1) & ~inside
+    set_missing["Coordinates"] = int(invalid.sum())
+    df.loc[~inside, ["Latitude", "Longitude"]] = np.nan
+
     df["City"] = clean_text(df["City"])
     df["PostalCode"] = clean_text(df["PostalCode"], width=5)
     df["CloseMonth"] = df["CloseDate"].dt.strftime("%Y%m")
     return df, pd.DataFrame(steps), set_missing
 
 
-def model_inputs(frame: pd.DataFrame) -> pd.DataFrame:
-    """Keep numeric columns numeric and normalize categorical missing values."""
-    x = frame[FEATURES].copy()
-    for col in NUMERIC:
-        x[col] = pd.to_numeric(x[col], errors="coerce").astype("float64")
-    for col in CATEGORICAL:
-        x[col] = clean_text(x[col])
+# --------------------------------------------------------------------------
+# Feature sets
+# --------------------------------------------------------------------------
+
+# Engineered columns and the raw columns each one is computed from. They are
+# built row by row inside the model pipeline, so nothing is learned from data.
+ENGINEERED = {
+    "BedBathRatio": ("BedroomsTotal", "BathroomsTotalInteger"),
+    "LivingAreaPerBedroom": ("LivingArea", "BedroomsTotal"),
+    "LotToLivingAreaRatio": ("LotSizeSquareFeet", "LivingArea"),
+    "AgeAtSale": ("YearBuilt", "SaleYear"),
+}
+# Size-like columns that the log-log linear model logs; other numerics are scaled as is.
+LOGGED_IN_LINEAR = {"LivingArea", "LotSizeSquareFeet", "LivingAreaPerBedroom",
+                    "LotToLivingAreaRatio"}
+TEXT_INPUTS = {"City", "PostalCode", "SchoolDistrict"}
+
+
+@dataclass(frozen=True)
+class FeatureSet:
+    """Named model features: numeric (raw or engineered) and categorical."""
+    name: str
+    numeric: tuple[str, ...]
+    categorical: tuple[str, ...]
+
+    def __post_init__(self):
+        assert not EXCLUDED.intersection(self.numeric + self.categorical), self.name
+
+    @property
+    def inputs(self) -> list[str]:
+        """Raw columns the pipeline needs, in a stable order."""
+        cols = []
+        for col in self.numeric + self.categorical:
+            for raw in ENGINEERED.get(col, (col,)):
+                if raw not in cols:
+                    cols.append(raw)
+        return cols
+
+    def plus(self, name: str, *groups: str) -> FeatureSet:
+        numeric, categorical = list(self.numeric), list(self.categorical)
+        for group in groups:
+            add_numeric, add_categorical = FEATURE_GROUPS[group]
+            numeric += [c for c in add_numeric if c not in numeric]
+            categorical += [c for c in add_categorical if c not in categorical]
+        return FeatureSet(name, tuple(numeric), tuple(categorical))
+
+
+FEATURE_GROUPS = {
+    "ratios": (("BedBathRatio", "LivingAreaPerBedroom", "LotToLivingAreaRatio"), ()),
+    "age": (("AgeAtSale",), ()),
+    "coordinates": (("Latitude", "Longitude"), ()),
+    "school district": ((), ("SchoolDistrict",)),
+}
+BASE_FEATURES = FeatureSet("A", tuple(NUMERIC), tuple(CATEGORICAL))
+EXTENDED_FEATURES = BASE_FEATURES.plus("B", *FEATURE_GROUPS)
+
+
+def add_engineered_features(x: pd.DataFrame) -> pd.DataFrame:
+    """Append every engineered column whose raw inputs are present.
+
+    Division by a missing denominator gives NaN, which the pipeline imputes.
+    Zero counts and areas were already set to missing during cleaning.
+    """
+    x = x.copy()
+    if {"BedroomsTotal", "BathroomsTotalInteger"} <= set(x.columns):
+        x["BedBathRatio"] = x["BedroomsTotal"] / x["BathroomsTotalInteger"]
+    if {"LivingArea", "BedroomsTotal"} <= set(x.columns):
+        x["LivingAreaPerBedroom"] = x["LivingArea"] / x["BedroomsTotal"]
+    if {"LotSizeSquareFeet", "LivingArea"} <= set(x.columns):
+        x["LotToLivingAreaRatio"] = x["LotSizeSquareFeet"] / x["LivingArea"]
+    if {"YearBuilt", "SaleYear"} <= set(x.columns):
+        x["AgeAtSale"] = x["SaleYear"] - x["YearBuilt"]
     return x
+
+
+def model_inputs(frame: pd.DataFrame, features: FeatureSet = BASE_FEATURES) -> pd.DataFrame:
+    """Raw input columns for ``features``: numerics as float, text normalized."""
+    x = frame[features.inputs].copy()
+    for col in x.columns:
+        if col in TEXT_INPUTS:
+            x[col] = clean_text(x[col])
+        else:
+            x[col] = pd.to_numeric(x[col], errors="coerce").astype("float64")
+    return x
+
+
+# --------------------------------------------------------------------------
+# School districts
+# --------------------------------------------------------------------------
+
+def load_school_districts(shapefile: Path):
+    """CA School District Areas 2024-25 as a GeoDataFrame in WGS84.
+
+    geopandas is imported here so notebooks that never join districts do not
+    need it. Seven polygons in the source file are invalid and are repaired.
+    """
+    import geopandas as gpd
+
+    districts = gpd.read_file(shapefile)[["CDCode", "DistrictNa", "DistrictTy",
+                                          "CountyName", "geometry"]]
+    districts["geometry"] = districts.geometry.make_valid()
+    return districts.to_crs(epsg=4326)
+
+
+def assign_school_districts(latitude: pd.Series, longitude: pd.Series,
+                            districts) -> pd.DataFrame:
+    """One school-district label per point.
+
+    Elementary and high school districts overlap outside unified districts, so
+    a point inside a unified district gets that district's CDS code, and any
+    other point gets its elementary and high school codes joined as
+    "elementary|high" (either part may be "-"). Missing coordinates, and points
+    outside every district, get NaN.
+    """
+    import geopandas as gpd
+
+    located = latitude.notna() & longitude.notna()
+    points = gpd.GeoDataFrame(
+        index=latitude.index[located],
+        geometry=gpd.points_from_xy(longitude[located], latitude[located]), crs=4326)
+    hits = gpd.sjoin(points, districts, how="inner", predicate="within")
+    # Ties (a point on a shared edge or in an overlapping sliver) go to the lowest code.
+    hits = hits.reset_index().sort_values(["index", "CDCode"])
+    first = hits.drop_duplicates(["index", "DistrictTy"]).set_index(["index", "DistrictTy"])
+
+    def by_type(kind, column):
+        rows = first.xs(kind, level="DistrictTy") if kind in first.index.levels[1] else first.iloc[:0]
+        return rows[column].reindex(latitude.index)
+
+    unified_code, unified_name = by_type("Unified", "CDCode"), by_type("Unified", "DistrictNa")
+    elem_code, elem_name = by_type("Elementary", "CDCode"), by_type("Elementary", "DistrictNa")
+    high_code, high_name = by_type("High", "CDCode"), by_type("High", "DistrictNa")
+
+    split = unified_code.isna() & (elem_code.notna() | high_code.notna())
+    code = unified_code.copy()
+    code[split] = elem_code[split].fillna("-") + "|" + high_code[split].fillna("-")
+    name = unified_name.copy()
+    name[split] = elem_name[split].fillna("-") + " / " + high_name[split].fillna("-")
+    kind = pd.Series(np.where(unified_code.notna(), "Unified",
+                              np.where(split, "Elementary + high", None)),
+                     index=latitude.index)
+    return pd.DataFrame({"SchoolDistrict": code, "SchoolDistrictName": name,
+                         "SchoolDistrictType": kind})
 
 
 # --------------------------------------------------------------------------
@@ -190,23 +361,37 @@ def _numeric_linear_pipeline(log_features: bool = False) -> Pipeline:
     return Pipeline(steps)
 
 
-def make_linear_model(log_target: bool = False) -> RegressorMixin:
-    """Week 4 baseline: OLS with scaled numerics and one-hot city/ZIP.
+def _with_features(prep: ColumnTransformer, regressor: RegressorMixin,
+                   log_target: bool) -> RegressorMixin:
+    """Engineered columns, then column-wise preprocessing, then the model.
+
+    The first step only adds columns, and the ColumnTransformer picks the ones a
+    feature set uses, so the Week 5 feature set gives the same model as before.
+    """
+    pipeline = Pipeline([("features", FunctionTransformer(add_engineered_features)),
+                         ("preprocess", prep), ("regression", regressor)])
+    return _log_target(pipeline) if log_target else pipeline
+
+
+def make_linear_model(log_target: bool = False,
+                      features: FeatureSet = BASE_FEATURES) -> RegressorMixin:
+    """Week 4 baseline: OLS with scaled numerics and one-hot categoricals.
 
     With ``log_target=True`` this is the log-log variant: log price regressed on
-    log living area and log lot size.
+    the logs of the size-like columns (living area and lot size in Week 4).
     """
     categorical = Pipeline([
         ("impute", SimpleImputer(strategy="constant", fill_value="UNKNOWN")),
         ("encode", OneHotEncoder(handle_unknown="infrequent_if_exist", min_frequency=20)),
     ])
+    size = [c for c in features.numeric if c in LOGGED_IN_LINEAR]
+    other = [c for c in features.numeric if c not in LOGGED_IN_LINEAR]
     prep = ColumnTransformer([
-        ("size", _numeric_linear_pipeline(log_features=log_target), SKEWED),
-        ("counts", _numeric_linear_pipeline(), COUNTS),
-        ("categorical", categorical, CATEGORICAL),
+        ("size", _numeric_linear_pipeline(log_features=log_target), size),
+        ("counts", _numeric_linear_pipeline(), other),
+        ("categorical", categorical, list(features.categorical)),
     ])
-    pipeline = Pipeline([("preprocess", prep), ("regression", LinearRegression())])
-    return _log_target(pipeline) if log_target else pipeline
+    return _with_features(prep, LinearRegression(), log_target)
 
 
 LINEAR_MODELS: dict[str, ModelFactory] = {
@@ -215,12 +400,13 @@ LINEAR_MODELS: dict[str, ModelFactory] = {
 }
 
 
-def make_tree_model(regressor: RegressorMixin, log_target: bool = False) -> RegressorMixin:
-    """Tree-model pipeline: no scaling, median imputation, target-encoded city/ZIP.
+def make_tree_model(regressor: RegressorMixin, log_target: bool = False,
+                    features: FeatureSet = BASE_FEATURES) -> RegressorMixin:
+    """Tree-model pipeline: no scaling, median imputation, target-encoded categoricals.
 
     ``TargetEncoder.fit_transform`` cross-fits (5 folds), so during training a
-    row's city/ZIP encoding is computed without its own price. Categories not
-    seen in training are encoded as the training mean.
+    row's city/ZIP/district encoding is computed without its own price.
+    Categories not seen in training are encoded as the training mean.
     """
     categorical = Pipeline([
         ("impute", SimpleImputer(strategy="constant", fill_value="UNKNOWN")),
@@ -228,11 +414,10 @@ def make_tree_model(regressor: RegressorMixin, log_target: bool = False) -> Regr
                                  cv=KFold(5, shuffle=True, random_state=RANDOM_STATE))),
     ])
     prep = ColumnTransformer([
-        ("numeric", SimpleImputer(strategy="median", add_indicator=True), NUMERIC),
-        ("categorical", categorical, CATEGORICAL),
+        ("numeric", SimpleImputer(strategy="median", add_indicator=True), list(features.numeric)),
+        ("categorical", categorical, list(features.categorical)),
     ])
-    pipeline = Pipeline([("preprocess", prep), ("regression", regressor)])
-    return _log_target(pipeline) if log_target else pipeline
+    return _with_features(prep, regressor, log_target)
 
 
 TREE_ESTIMATORS = {
@@ -241,11 +426,12 @@ TREE_ESTIMATORS = {
 }
 
 
-def tree_factory(kind: str, params: dict, log_target: bool) -> ModelFactory:
+def tree_factory(kind: str, params: dict, log_target: bool,
+                 features: FeatureSet = BASE_FEATURES) -> ModelFactory:
     """Factory for a seeded decision tree or random forest with ``params``."""
     estimator = clone(TREE_ESTIMATORS[kind]).set_params(**params)
     # Clone on every call so a kept fitted model is never refit by a later cutoff.
-    return lambda: make_tree_model(clone(estimator), log_target)
+    return lambda: make_tree_model(clone(estimator), log_target, features)
 
 
 def describe_config(params: dict, log_target: bool) -> str:
@@ -314,7 +500,8 @@ def run_cutoff(data: pd.DataFrame, eval_month: str,
                model_factories: dict[str, ModelFactory],
                n_train_months: int | None = None,
                score_train: bool = False,
-               keep_models: bool = False) -> dict:
+               keep_models: bool = False,
+               inputs: FeatureSet = BASE_FEATURES) -> dict:
     """Train on months before ``eval_month`` and score every model on it.
 
     Price bounds (0.5th/99.5th percentiles) come from the training months only;
@@ -323,7 +510,9 @@ def run_cutoff(data: pd.DataFrame, eval_month: str,
 
     Each factory is called once, so a fresh unfitted model is built per cutoff.
     Fitted models are kept only when ``keep_models`` is set, because full-depth
-    forests are large.
+    forests are large. ``inputs`` sets the raw columns passed to every model;
+    each pipeline selects the ones its own feature set uses, so models with
+    different feature sets can share one cutoff and the same rows.
     """
     months = sorted(data["CloseMonth"].unique())
     prior_months = [month for month in months if month < eval_month]
@@ -337,8 +526,8 @@ def run_cutoff(data: pd.DataFrame, eval_month: str,
     lower, upper = train[TARGET].quantile([LOW_Q, HIGH_Q])
     train_fit = train.loc[train[TARGET].between(lower, upper)]
     in_range = evaluate[TARGET].between(lower, upper)
-    x_train = model_inputs(train_fit)
-    x_eval = model_inputs(evaluate)
+    x_train = model_inputs(train_fit, inputs)
+    x_eval = model_inputs(evaluate, inputs)
 
     results = {}
     for name, factory in model_factories.items():
@@ -365,19 +554,21 @@ def run_cutoff(data: pd.DataFrame, eval_month: str,
             "evaluate": evaluate, "in_range": in_range, "results": results}
 
 
-def split_name(month: str) -> str:
-    return ("test" if month == TEST_MONTH
-            else "validation" if month == VAL_MONTH else "backtest")
+def split_name(month: str, val_month: str = VAL_MONTH, test_month: str = TEST_MONTH) -> str:
+    return ("test" if month == test_month
+            else "validation" if month == val_month else "backtest")
 
 
-def metric_records(run: dict, params: dict[str, str] | None = None) -> list[dict]:
+def metric_records(run: dict, params: dict[str, str] | None = None,
+                   val_month: str = VAL_MONTH, test_month: str = TEST_MONTH) -> list[dict]:
     """Flatten one ``run_cutoff`` result into rows matching baseline_metrics.csv."""
     params = params or {}
+    split = split_name(run["month"], val_month, test_month)
     records = []
     for name, res in run["results"].items():
         for scope in ("filtered", "all"):
             metrics = {k: v for k, v in res[scope].items()}
-            records.append({"split": split_name(run["month"]), "month": run["month"],
+            records.append({"split": split, "month": run["month"],
                             "model": name, "scope": scope, "coverage": run["coverage"],
                             **metrics, "params": params.get(name, "")})
     return records
